@@ -1,0 +1,139 @@
+// ── Road CSV 로드 ─────────────────────────────────────────────────
+roadInput.addEventListener('change', function(e) {
+	const file = e.target.files[0];
+	if (!file) return;
+
+	const reader = new FileReader();
+	reader.onload = (ev) => {
+		const lines = ev.target.result.trim().split('\n');
+		// 헤더로 구분자 자동 감지
+		const delimiter = lines[0].includes('\t') ? '\t' : ',';
+
+		const roadMap = {};
+		for (let i = 1; i < lines.length; i++) {
+			const cols = lines[i].split(delimiter); // ← 감지된 구분자 사용
+			if (cols.length < 4) continue;          // ← != 4 대신 < 4 (후행 공백 컬럼 허용)
+
+			const id = cols[0].trim();
+			const pi = parseInt(cols[1].trim());
+			const rx = parseFloat(cols[2].trim());
+			const ry = parseFloat(cols[3].trim());
+			if (isNaN(rx) || isNaN(ry) || isNaN(pi)) continue;
+
+			const px = (rx / SOURCE_FULL_SIZE) * FULL_OUTPUT_SIZE;
+			const py = (ry / SOURCE_FULL_SIZE) * FULL_OUTPUT_SIZE;
+			
+			if (!roadMap[id]) roadMap[id] = [];
+			roadMap[id][pi] = { px, py };					
+		}
+
+		roadSegments = Object.values(roadMap).map(pts => ({
+			points: pts.filter(Boolean)
+		}));
+
+		const totalPts = roadSegments.reduce((s, seg) => s + seg.points.length, 0);
+		roadStatus.innerText = `✓ ${roadSegments.length}개 도로, ${totalPts}개 포인트 로드됨`;
+
+		applyRoads();
+	};
+	reader.readAsText(file);
+});
+
+
+// ── 도로를 tileImageDatas에 Blue=255로 마킹 후 캔버스 반영 ────────
+function applyRoads() {
+	if (tileImageDatas.every(d => d === null)) return;
+
+	const ROAD_HALF_WIDTH = 1;
+
+	function getHeight(gx, gy) {
+		if (gx < 0 || gy < 0 || gx >= FULL_OUTPUT_SIZE || gy >= FULL_OUTPUT_SIZE) return -1;
+		const tileCol = Math.floor(gx / OUTPUT_TILE_SIZE);
+		const tileRow = Math.floor(gy / OUTPUT_TILE_SIZE);
+		const tileIdx = tileRow * GRID_COUNT + tileCol;
+		const td = tileImageDatas[tileIdx];
+		if (!td) return -1;
+		const lx = gx % OUTPUT_TILE_SIZE;
+		const ly = gy % OUTPUT_TILE_SIZE;
+		const i = (ly * OUTPUT_TILE_SIZE + lx) * 4;
+		return td.data[i] * 256 + td.data[i + 1];
+	}
+
+	function setPixel(gx, gy, height16) {
+		if (gx < 0 || gy < 0 || gx >= FULL_OUTPUT_SIZE || gy >= FULL_OUTPUT_SIZE) return;
+		const tileCol = Math.floor(gx / OUTPUT_TILE_SIZE);
+		const tileRow = Math.floor(gy / OUTPUT_TILE_SIZE);
+		const tileIdx = tileRow * GRID_COUNT + tileCol;
+		const td = tileImageDatas[tileIdx];
+		if (!td) return;
+		const lx = gx % OUTPUT_TILE_SIZE;
+		const ly = gy % OUTPUT_TILE_SIZE;
+		const i = (ly * OUTPUT_TILE_SIZE + lx) * 4;
+		td.data[i]     = Math.floor(height16 / 256);
+		td.data[i + 1] = height16 % 256;
+		td.data[i + 2] = 255; // Blue = road marker
+	}
+	
+	for (const seg of roadSegments) {
+		const pts = seg.points;
+		if (pts.length < 2) continue;
+
+		for (let si = 0; si < pts.length - 1; si++) {
+			const p0 = pts[si];
+			const p1 = pts[si + 1];
+
+			const h0 = getHeight(Math.round(p0.px), Math.round(p0.py));
+			const h1 = getHeight(Math.round(p1.px), Math.round(p1.py));
+			if (h0 < 0 || h1 < 0) continue;
+
+			const dx = p1.px - p0.px;
+			const dy = p1.py - p0.py;
+			const len = Math.sqrt(dx * dx + dy * dy);
+			if (len === 0) continue;
+
+			// 진행 방향 단위벡터 (along), 법선 단위벡터 (normal)
+			const ax = dx / len;
+			const ay = dy / len;
+			const nx = -ay;
+			const ny =  ax;
+
+			// OBB의 4 꼭짓점으로 AABB 계산
+			const corners = [
+				{ x: p0.px + nx * ROAD_HALF_WIDTH,  y: p0.py + ny * ROAD_HALF_WIDTH  },
+				{ x: p0.px - nx * ROAD_HALF_WIDTH,  y: p0.py - ny * ROAD_HALF_WIDTH  },
+				{ x: p1.px + nx * ROAD_HALF_WIDTH,  y: p1.py + ny * ROAD_HALF_WIDTH  },
+				{ x: p1.px - nx * ROAD_HALF_WIDTH,  y: p1.py - ny * ROAD_HALF_WIDTH  },
+			];
+			const minX = Math.floor(Math.min(...corners.map(c => c.x)));
+			const maxX = Math.ceil (Math.max(...corners.map(c => c.x)));
+			const minY = Math.floor(Math.min(...corners.map(c => c.y)));
+			const maxY = Math.ceil (Math.max(...corners.map(c => c.y)));
+
+			for (let py = minY; py <= maxY; py++) {
+				for (let px = minX; px <= maxX; px++) {
+					// p0 기준 상대 벡터를 along/normal 축으로 투영
+					const relX = px - p0.px;
+					const relY = py - p0.py;
+
+					const along  = relX * ax + relY * ay; // 진행 방향 성분
+					const normal = relX * nx + relY * ny; // 법선 방향 성분
+
+					// OBB 범위 밖이면 스킵
+					if (along  < 0 || along  > len) continue;
+					if (Math.abs(normal) > ROAD_HALF_WIDTH) continue;
+
+					const t = along / len;
+					const targetH = h0 + (h1 - h0) * t;
+					setPixel(px, py, Math.round(targetH));
+				}
+			}
+		}
+	}
+	
+	// 캔버스 반영
+	for (let i = 0; i < GRID_COUNT * GRID_COUNT; i++) {
+		if (tileImageDatas[i]) {
+			canvases[i].getContext('2d').putImageData(tileImageDatas[i], 0, 0);
+		}
+	}
+}

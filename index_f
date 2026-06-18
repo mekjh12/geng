@@ -1,0 +1,2116 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Heightmap Downloader</title>
+
+<script src='https://api.tiles.mapbox.com/mapbox-gl-js/v1.8.0/mapbox-gl.js'></script>
+<link href='https://api.tiles.mapbox.com/mapbox-gl-js/v1.8.0/mapbox-gl.css' rel='stylesheet' />
+<script src="https://unpkg.com/mapbox-gl-geocoder@4.7.2/dist/mapbox-gl-geocoder.min.js"></script>
+<link href="https://unpkg.com/mapbox-gl-geocoder@4.7.2/dist/mapbox-gl-geocoder.css" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap');
+
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --border: #1e1e2e;
+    --accent: #00ff88;
+    --accent2: #0088ff;
+    --accent3: #ff8800;
+    --text: #e8e8f0;
+    --muted: #5a5a7a;
+    --danger: #ff4444;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Space Mono', monospace;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #map { flex: 1; width: 100%; }
+
+  .panel {
+    position: absolute;
+    top: 12px;
+    right: 16px;
+    z-index: 10;
+    width: 290px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    font-family: 'Syne', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .panel-body {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .coord-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .coord-item {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 8px 10px;
+  }
+
+  .coord-label {
+    font-size: 9px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 2px;
+  }
+
+  .coord-value {
+    font-size: 13px;
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .field-label {
+    font-size: 9px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  /* ── 좌표 직접 입력 섹션 ── */
+  .coord-input-section {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 10px 12px;
+  }
+
+  .coord-input-section .field-label {
+    margin-bottom: 8px;
+    color: var(--accent2);
+  }
+
+  .coord-input-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+
+  .coord-input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .coord-input-label {
+    font-size: 8px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .coord-input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 6px 8px;
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .coord-input:focus {
+    border-color: var(--accent2);
+    box-shadow: 0 0 0 2px rgba(0,136,255,0.15);
+  }
+
+  .coord-input::placeholder {
+    color: var(--muted);
+    font-size: 10px;
+  }
+
+  .coord-input.error {
+    border-color: var(--danger);
+    box-shadow: 0 0 0 2px rgba(255,68,68,0.15);
+  }
+
+  .coord-go-btn {
+    width: 100%;
+    padding: 8px;
+    background: var(--accent2);
+    color: var(--bg);
+    border: none;
+    border-radius: 3px;
+    font-family: 'Syne', sans-serif;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .coord-go-btn::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0.2);
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+
+  .coord-go-btn:hover::before { opacity: 1; }
+  .coord-go-btn:active { transform: scale(0.98); }
+
+  .coord-error-msg {
+    font-size: 9px;
+    color: var(--danger);
+    margin-top: 4px;
+    min-height: 12px;
+    letter-spacing: 0.5px;
+  }
+  /* ── end 좌표 직접 입력 ── */
+
+  .grid-size-wrap {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 10px 12px;
+  }
+
+  .grid-size-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+
+  .grid-size-label {
+    font-size: 9px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .grid-size-badge {
+    font-family: 'Syne', sans-serif;
+    font-size: 13px;
+    font-weight: 800;
+    color: var(--accent);
+    background: rgba(0,255,136,0.08);
+    border: 1px solid rgba(0,255,136,0.25);
+    border-radius: 3px;
+    padding: 2px 8px;
+    letter-spacing: 1px;
+  }
+
+  .grid-tick-row {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+  }
+
+  .grid-tick {
+    font-size: 8px;
+    color: var(--muted);
+  }
+
+  .info-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 10px;
+    text-align: center;
+  }
+
+  .info-box .coord-label { margin-bottom: 4px; }
+  .info-box .coord-value { font-size: 15px; }
+
+  .height-info {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .height-item .h-label {
+    font-size: 9px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .height-item .h-value {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    margin-top: 2px;
+  }
+
+  .download-btn {
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 3px;
+    font-family: 'Syne', sans-serif;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .download-btn::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0.15);
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+
+  .download-btn:hover::before { opacity: 1; }
+  .download-btn:active { transform: scale(0.98); }
+
+  .download-btn:disabled {
+    background: var(--border) !important;
+    color: var(--muted) !important;
+    cursor: not-allowed;
+  }
+
+  .download-btn:disabled::before { display: none; }
+
+  .btn-png { background: var(--accent); color: var(--bg); }
+  .btn-raw { background: var(--accent3); color: var(--bg); }
+  .btn-overview { background: linear-gradient(135deg, #8800ff, #4400cc); color: #fff; border: none; border-radius: 3px; cursor: pointer; transition: all 0.2s; position: relative; overflow: hidden; }
+  .btn-overview::before { content: ''; position: absolute; inset: 0; background: rgba(255,255,255,0.15); opacity: 0; transition: opacity 0.2s; }
+  .btn-overview:hover::before { opacity: 1; }
+  .btn-overview:active { transform: scale(0.98); }
+  .btn-overview:disabled { background: var(--border) !important; color: var(--muted) !important; cursor: not-allowed; }
+  .btn-overview:disabled::before { display: none; }
+
+  .btn-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .btn-row .download-btn {
+    font-size: 11px;
+    padding: 12px 6px;
+  }
+
+  .progress-wrap {
+    display: none;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .progress-wrap.visible { display: flex; }
+
+  .progress-label {
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 1px;
+  }
+
+  .progress-bar-bg {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent2), var(--accent));
+    width: 0%;
+    transition: width 0.3s;
+    border-radius: 2px;
+  }
+
+  .status {
+    font-size: 10px;
+    color: var(--muted);
+    text-align: center;
+    min-height: 14px;
+  }
+
+  .status.ok  { color: var(--accent); }
+  .status.err { color: var(--danger); }
+
+  .geocoder-wrap {
+    position: absolute;
+    top: 12px;
+    left: 16px;
+    z-index: 10;
+    width: 260px;
+  }
+
+  .mapboxgl-ctrl-geocoder {
+    font-family: 'Space Mono', monospace !important;
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 4px !important;
+    box-shadow: none !important;
+    min-width: 100% !important;
+    width: 100% !important;
+  }
+
+  .mapboxgl-ctrl-geocoder input {
+    background: transparent !important;
+    color: var(--text) !important;
+    font-family: 'Space Mono', monospace !important;
+    font-size: 12px !important;
+  }
+
+  .mapboxgl-ctrl-geocoder input::placeholder { color: var(--muted) !important; }
+
+  .mapboxgl-ctrl-geocoder .suggestions {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 3px !important;
+  }
+
+  .mapboxgl-ctrl-geocoder .suggestions li a {
+    color: var(--text) !important;
+    font-size: 11px !important;
+  }
+
+  .legend {
+    position: absolute;
+    bottom: 32px;
+    left: 16px;
+    z-index: 10;
+    display: flex;
+    gap: 12px;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .legend-color {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    opacity: 0.8;
+  }
+
+  #loading-overlay {
+    display: none;
+    position: absolute;
+    inset: 0;
+    background: rgba(10,10,15,0.7);
+    z-index: 50;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(2px);
+  }
+
+  #loading-overlay.visible { display: flex; }
+
+  .loading-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 28px 36px;
+    text-align: center;
+    min-width: 340px;
+    max-width: 420px;
+  }
+
+  .pipeline-steps {
+    margin: 14px 0 10px;
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .pipe-step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    opacity: 0.35;
+    transition: opacity 0.3s;
+  }
+  .pipe-step.active { opacity: 1; }
+  .pipe-step.done   { opacity: 0.65; }
+  .pipe-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex-shrink: 0;
+    transition: background 0.3s;
+  }
+  .pipe-step.active .pipe-dot { background: var(--accent2); box-shadow: 0 0 6px var(--accent2); }
+  .pipe-step.done   .pipe-dot { background: var(--accent); }
+  .pipe-label {
+    font-size: 10px;
+    color: var(--text);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .pipe-desc {
+    font-weight: 400;
+    color: var(--muted);
+    margin-left: 4px;
+  }
+
+  .load-progress-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 10px 0 4px;
+  }
+  .load-progress-bg {
+    flex: 1;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .load-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+  }
+  .load-progress-label {
+    font-size: 9px;
+    color: var(--muted);
+    min-width: 28px;
+    text-align: right;
+  }
+
+  .loading-spinner {
+    width: 36px;
+    height: 36px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto 16px;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .loading-text {
+    font-family: 'Syne', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+
+  .loading-sub {
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .tile-grid-wrap { margin-top: 12px; }
+
+  .tile-grid {
+    display: grid;
+    gap: 2px;
+    margin-top: 8px;
+  }
+
+  .tile-cell {
+    aspect-ratio: 1;
+    background: var(--border);
+    border-radius: 1px;
+    transition: background 0.2s;
+  }
+
+  .tile-cell.done    { background: var(--accent); }
+  .tile-cell.active  { background: var(--accent2); animation: pulse 0.6s infinite alternate; }
+  .tile-cell.error   { background: var(--danger); }
+
+  @keyframes pulse { to { opacity: 0.4; } }
+
+  .hint {
+    position: absolute;
+    bottom: 32px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 6px 16px;
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 1px;
+    pointer-events: none;
+    transition: opacity 0.5s;
+  }
+
+  .hint.hide { opacity: 0; }
+
+  .format-badge {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 2px 10px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+  }
+  .format-badge.png { background: rgba(0,255,136,0.15); color: var(--accent); border: 1px solid rgba(0,255,136,0.3); }
+  .format-badge.raw { background: rgba(255,136,0,0.15); color: var(--accent3); border: 1px solid rgba(255,136,0,0.3); }
+
+  /* ── 확인 모달 ── */
+  #confirm-modal {
+    display: none;
+    position: absolute;
+    inset: 0;
+    z-index: 60;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10,10,15,0.75);
+    backdrop-filter: blur(3px);
+  }
+  #confirm-modal.visible { display: flex; }
+  .confirm-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 28px 32px;
+    min-width: 320px;
+    max-width: 400px;
+    text-align: center;
+  }
+  .confirm-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+  .confirm-desc {
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 20px;
+    line-height: 1.6;
+  }
+  .confirm-desc span { color: var(--accent); font-weight: 700; }
+  .confirm-btns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .confirm-btn {
+    padding: 11px;
+    border: none;
+    border-radius: 3px;
+    font-family: 'Syne', sans-serif;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.15s;
+  }
+  .confirm-btn:hover { opacity: 0.85; }
+  .confirm-btn:active { transform: scale(0.97); }
+  .confirm-btn-ok     { background: var(--accent3); color: var(--bg); }
+  .confirm-btn-cancel { background: var(--border);  color: var(--muted); }
+
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="geocoder-wrap" id="geocoder"></div>
+
+<div class="panel">
+  <div class="panel-header">Export Settings</div>
+  <div class="panel-body">
+
+    <div class="coord-row">
+      <div class="coord-item">
+        <div class="coord-label">LNG</div>
+        <div class="coord-value" id="disp-lng">—</div>
+      </div>
+      <div class="coord-item">
+        <div class="coord-label">LAT</div>
+        <div class="coord-value" id="disp-lat">—</div>
+      </div>
+    </div>
+
+    <!-- ── 위도/경도 직접 입력 섹션 ── -->
+    <div class="coord-input-section">
+      <div class="field-label">▸ 좌표 직접 입력</div>
+      <div class="coord-input-row">
+        <div class="coord-input-group">
+          <div class="coord-input-label">위도 (LAT)</div>
+          <input
+            class="coord-input"
+            id="input-lat"
+            type="number"
+            step="any"
+            min="-90"
+            max="90"
+            placeholder="-90 ~ 90"
+          />
+        </div>
+        <div class="coord-input-group">
+          <div class="coord-input-label">경도 (LNG)</div>
+          <input
+            class="coord-input"
+            id="input-lng"
+            type="number"
+            step="any"
+            min="-180"
+            max="180"
+            placeholder="-180 ~ 180"
+          />
+        </div>
+      </div>
+      <button class="coord-go-btn" onclick="applyCoordInput()">↗ 이동 &amp; 선택</button>
+      <div class="coord-error-msg" id="coord-error"></div>
+    </div>
+    <!-- ── end 직접 입력 ── -->
+
+    <div>
+      <div class="field-label">Output</div>
+      <div class="info-box">
+        <div class="coord-label">3 × 3 tiles &nbsp;|&nbsp; 1024 × 1024 px / tile</div>
+        <div class="coord-value" style="font-size:15px; margin-top:4px;" id="info-total-km">9.216 km × 9.216 km</div>
+      </div>
+    </div>
+
+    <div class="height-info">
+      <div class="height-item">
+        <div class="h-label">Min Height</div>
+        <div class="h-value" id="disp-min">— m</div>
+      </div>
+      <div class="height-item">
+        <div class="h-label">Max Height</div>
+        <div class="h-value" id="disp-max">— m</div>
+      </div>
+    </div>
+
+    <div class="progress-wrap" id="progress-wrap">
+      <div class="progress-label" id="progress-label">처리 중...</div>
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="progress-fill"></div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="download-btn btn-png" id="dl-btn-png" onclick="startDownload('png')">
+        ↓ PNG ZIP
+      </button>
+      <button class="download-btn btn-raw" id="dl-btn-raw" onclick="startDownload('raw')">
+        ↓ RAW ZIP
+      </button>
+    </div>
+    <div class="status" id="status-msg" style="font-size:9px; text-align:center; color:var(--muted);">
+      PNG: Mapbox RGB 재인코딩 &nbsp;|&nbsp; RAW: 24-bit R·G·B 원본
+    </div>
+
+    <div style="margin-top:10px; border-top:1px solid var(--border); padding-top:10px;">
+      <div class="field-label" style="margin-bottom:6px;">Overview (512×512 · 1px=1mpp)</div>
+      <button class="download-btn btn-overview" id="dl-btn-overview" onclick="startOverviewDownload()"
+        style="width:100%; font-size:11px; padding:10px;">
+        ↓ Overview PNG
+      </button>
+      <div class="status" id="status-overview" style="font-size:9px; margin-top:4px; color:var(--muted);">
+        중심 타일 1장 · elev + normal
+      </div>
+    </div>
+
+    <div style="margin-top:10px; border-top:1px solid var(--border); padding-top:10px;">
+      <div class="field-label" style="margin-bottom:6px;">Mega Map (9216×9216 · 보라색 그리드)</div>
+      <button class="download-btn btn-overview" id="dl-btn-mega" onclick="startMegaMapDownload()"
+        style="width:100%; font-size:11px; padding:10px; background:linear-gradient(135deg,#cc6600,#994400);">
+        ↓ Mega Map PNG
+      </button>
+      <div class="status" id="status-mega" style="font-size:9px; margin-top:4px; color:var(--muted);">
+        9,216m × 9,216m · 3×3 그리드 선 포함
+      </div>
+    </div>
+    <div class="status" id="status-result">지도를 클릭하여 중심 위치를 선택하세요</div>
+  </div>
+</div>
+
+<div class="legend">
+  <div class="legend-item">
+    <div class="legend-color" style="background:#888888;"></div>전체 영역
+  </div>
+  <div class="legend-item">
+    <div class="legend-color" style="background:#00cc44;"></div>플레이 영역
+  </div>
+  <div class="legend-item">
+    <div class="legend-color" style="background:#4464e1;"></div>시작 영역
+  </div>
+</div>
+
+<div class="hint" id="hint">지도를 클릭하거나 좌표를 입력하여 위치 선택</div>
+
+<div id="confirm-modal">
+  <div class="confirm-box">
+    <div class="confirm-title" id="confirm-title">RAW 다운로드 확인</div>
+    <div class="confirm-desc" id="confirm-desc"></div>
+    <div class="confirm-btns">
+      <button class="confirm-btn confirm-btn-cancel" id="confirm-cancel">취소</button>
+      <button class="confirm-btn confirm-btn-ok"     id="confirm-ok">↓ 다운로드</button>
+    </div>
+  </div>
+</div>
+
+<div id="loading-overlay">
+  <div class="loading-box">
+    <div class="loading-spinner"></div>
+    <div class="loading-text" id="loading-text">하이트맵 생성 중</div>
+    <div id="loading-format-badge"></div>
+
+    <div class="pipeline-steps">
+      <div class="pipe-step" id="pipe-step-1">
+        <div class="pipe-dot"></div>
+        <div class="pipe-label">버퍼1 <span class="pipe-desc">전체영역 다운로드 → crop → 1024×1024</span></div>
+      </div>
+      <div class="pipe-step" id="pipe-step-2">
+        <div class="pipe-dot"></div>
+        <div class="pipe-label">버퍼2 <span class="pipe-desc">bicubic 업샘플 → 9216×9216</span></div>
+      </div>
+      <div class="pipe-step" id="pipe-step-3">
+        <div class="pipe-dot"></div>
+        <div class="pipe-label">버퍼3 <span class="pipe-desc">Gaussian blur → 타일 추출</span></div>
+      </div>
+    </div>
+
+    <div class="load-progress-wrap">
+      <div class="load-progress-bg">
+        <div class="load-progress-fill" id="load-progress-fill"></div>
+      </div>
+      <div class="load-progress-label" id="load-progress-label">0%</div>
+    </div>
+
+    <div class="loading-sub" id="loading-sub">잠시만 기다려주세요...</div>
+
+    <div class="tile-grid-wrap">
+      <div class="tile-grid" id="tile-progress-grid"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v4.7.0/mapbox-gl-geocoder.min.js"></script>
+<script src="https://npmcdn.com/@turf/turf/turf.min.js"></script>
+
+<script>
+'use strict';
+
+// ════════════════════════════════════════════════════════
+const MAPBOX_TOKEN  = "pk.eyJ1Ijoia2ltamFlaG8iLCJhIjoiY2pwc2VwMzlrMWs1ejN4cGd2dnU2b2dwcyJ9.-qJSvsEkAH9_OxjhFdfQqg";
+const TILE_SIZE_KM  = 1.024;
+const OUTPUT_PX     = 1024;
+const FETCH_ZOOM    = 14;
+const OVERVIEW_ZOOM = 10;
+const OVERVIEW_SIZE = 512;
+const MAPBOX_TILE_PX = 512;
+
+const EARTH_CIRCUMFERENCE = 40075016.686;
+const ZOOM14_TILES = Math.pow(2, 14);
+const METERS_PER_PIXEL_BY_LAT = Array.from({ length: 91 }, (_, lat) =>
+  (EARTH_CIRCUMFERENCE * Math.cos(lat * Math.PI / 180)) / (ZOOM14_TILES * MAPBOX_TILE_PX)
+);
+// ════════════════════════════════════════════════════════
+
+let GRID_N       = 9;
+let FULL_SIZE_KM = TILE_SIZE_KM * GRID_N;
+
+mapboxgl.accessToken = MAPBOX_TOKEN;
+
+let state = {
+  lng: 110.51317,
+  lat: 24.91867,
+  zoom: 9.5,
+  globalMin: null,
+  globalMax: null,
+};
+
+function onGridSizeChange(val) {
+  GRID_N       = parseInt(val, 10);
+  FULL_SIZE_KM = TILE_SIZE_KM * GRID_N;
+
+  const totalKm = FULL_SIZE_KM.toFixed(3);
+  const el = document.getElementById('info-total-km');
+  if (el) el.textContent = `${totalKm} km × ${totalKm} km`;
+
+  state.globalMin = null;
+  state.globalMax = null;
+  updateDisplay();
+  updateGrid();
+}
+
+const map = new mapboxgl.Map({
+  container: 'map',
+  style: 'mapbox://styles/mapbox/streets-v11',
+  center: [state.lng, state.lat],
+  zoom: state.zoom,
+  preserveDrawingBuffer: true,
+});
+
+map.addControl(new mapboxgl.NavigationControl(), 'bottom-right');
+
+const geocoder = new MapboxGeocoder({
+  accessToken: MAPBOX_TOKEN,
+  mapboxgl: mapboxgl,
+  marker: false,
+  placeholder: '장소 검색...',
+});
+document.getElementById('geocoder').appendChild(geocoder.onAdd(map));
+
+geocoder.on('result', e => {
+  state.lng = e.result.center[0];
+  state.lat = e.result.center[1];
+  updateGrid();
+  updateDisplay();
+  syncInputFields();
+});
+
+map.on('style.load', () => {
+  map.addSource('grid-cells', { type: 'geojson', data: makeGridCells() });
+  map.addLayer({
+    id: 'layer-cells-fill', type: 'fill', source: 'grid-cells',
+    paint: {
+      'fill-color': ['get', 'fillColor'],
+      'fill-opacity': ['get', 'fillOpacity'],
+    }
+  });
+  map.addLayer({
+    id: 'layer-cells-line', type: 'line', source: 'grid-cells',
+    paint: {
+      'line-color': ['get', 'lineColor'],
+      'line-width': 0.8,
+      'line-opacity': 0.7,
+    }
+  });
+
+  map.addSource('contours', { type: 'vector', url: 'mapbox://mapbox.mapbox-terrain-v2' });
+  map.addLayer({ id: 'contours', type: 'line', source: 'contours', 'source-layer': 'contour',
+    layout: { 'line-join': 'round', 'line-cap': 'round' },
+    paint: { 'line-color': '#877b59', 'line-width': 0.25 } });
+
+  map.addSource('overview-box', { type: 'geojson', data: makeOverviewBox() });
+  map.addLayer({
+    id: 'layer-overview-fill', type: 'fill', source: 'overview-box',
+    paint: { 'fill-color': '#8800ff', 'fill-opacity': 0.30 }
+  });
+  map.addLayer({
+    id: 'layer-overview-line', type: 'line', source: 'overview-box',
+    paint: { 'line-color': '#cc77ff', 'line-width': 2.0 }
+  });
+
+  // 라벨 레이어 (각 셀 중심 Point)
+  map.addSource('overview-labels', { type: 'geojson', data: makeOverviewLabels() });
+  map.addLayer({
+    id: 'layer-overview-labels', type: 'symbol', source: 'overview-labels',
+    layout: {
+      'text-field': ['get', 'label'],
+      'text-font': ['DIN Offc Pro Bold', 'Arial Unicode MS Bold'],
+      'text-size': 13,
+      'text-allow-overlap': true,
+      'text-ignore-placement': true,
+    },
+    paint: {
+      'text-color': '#ffffff',
+      'text-halo-color': '#330066',
+      'text-halo-width': 2.5,
+    }
+  });
+
+  updateDisplay();
+  syncInputFields();
+  onGridSizeChange(GRID_N);
+});
+
+map.on('click', 'layer-overview-fill', e => {
+  const props = e.features[0].properties;
+  const col   = props.col;
+  const row   = props.row;
+
+  // 셀 중심 좌표 계산 (makeOverviewLabels와 동일한 방식)
+  const OV_GRID_  = 9;
+  const regionKm  = TILE_SIZE_KM * GRID_N;
+  const halfKm    = (regionKm * OV_GRID_) / 2;
+  const centerPt  = turf.point([state.lng, state.lat]);
+
+  const nwLat = turf.destination(centerPt, halfKm,   0, { units: 'kilometers' }).geometry.coordinates[1];
+  const nwLng = turf.destination(centerPt, halfKm, 270, { units: 'kilometers' }).geometry.coordinates[0];
+
+  const lats = [];
+  const lngs = [];
+  for (let i = 0; i <= OV_GRID_; i++) {
+    lats.push(turf.destination(turf.point([state.lng, nwLat]), regionKm * i, 180, { units: 'kilometers' }).geometry.coordinates[1]);
+    lngs.push(turf.destination(turf.point([nwLng, state.lat]), regionKm * i,  90, { units: 'kilometers' }).geometry.coordinates[0]);
+  }
+
+  const cellCenterLng = (lngs[col] + lngs[col + 1]) / 2;
+  const cellCenterLat = (lats[row] + lats[row + 1]) / 2;
+
+  const displayY  = OV_GRID_ - 1 - row;
+  const prevLng   = state.lng;
+  const prevLat   = state.lat;
+
+  showConfirm(
+    `셀 (${col}, ${displayY}) 다운로드`,
+    `중심 좌표<br><span>${cellCenterLat.toFixed(5)}, ${cellCenterLng.toFixed(5)}</span><br><br>RAW ZIP을 다운로드하시겠습니까?`,
+    () => {
+      // 확인 → state를 셀 중심으로 교체 후 RAW 다운로드 실행
+      state.lng = cellCenterLng;
+      state.lat = cellCenterLat;
+      state.globalMin = null;
+      state.globalMax = null;
+      updateGrid();
+      updateDisplay();
+      syncInputFields();
+      setStatus(`셀 (${col},${displayY}) 중심으로 RAW 다운로드 시작...`, '');
+
+      startDownload('raw', () => {
+        // 다운로드 완료 후 원래 위치로 복원
+        state.lng = prevLng;
+        state.lat = prevLat;
+        state.globalMin = null;
+        state.globalMax = null;
+        updateGrid();
+        updateDisplay();
+        syncInputFields();
+        setStatus(`셀 (${col},${displayY}) 완료 → 원래 위치로 복원됨`, 'ok');
+      }, { ox: col - 4, oy: displayY - 4 });
+    }
+  );
+});
+
+map.on('click', e => {
+  // 오버뷰 셀 위 클릭이면 지도 중심 이동 건너뜀
+  const hit = map.queryRenderedFeatures(e.point, { layers: ['layer-overview-fill'] });
+  if (hit.length > 0) return;
+
+  state.lng = e.lngLat.lng;
+  state.lat = e.lngLat.lat;
+  state.globalMin = null;
+  state.globalMax = null;
+  updateGrid();
+  updateDisplay();
+  syncInputFields();
+  document.getElementById('hint').classList.add('hide');
+  setStatus('중심 선택 완료. 다운로드 버튼을 누르세요.', '');
+});
+
+map.on('mouseenter', 'layer-overview-fill', () => { map.getCanvas().style.cursor = 'pointer'; });
+map.on('mouseleave', 'layer-overview-fill', () => { map.getCanvas().style.cursor = ''; });
+
+// ── 입력 필드를 현재 state에 맞춰 동기화 ──────────────────
+function syncInputFields() {
+  const latEl = document.getElementById('input-lat');
+  const lngEl = document.getElementById('input-lng');
+  if (latEl) latEl.value = state.lat.toFixed(5);
+  if (lngEl) lngEl.value = state.lng.toFixed(5);
+  clearCoordError();
+}
+
+function clearCoordError() {
+  const errEl = document.getElementById('coord-error');
+  if (errEl) errEl.textContent = '';
+  document.getElementById('input-lat').classList.remove('error');
+  document.getElementById('input-lng').classList.remove('error');
+}
+
+function showCoordError(msg) {
+  const errEl = document.getElementById('coord-error');
+  if (errEl) errEl.textContent = msg;
+}
+
+// ── 좌표 직접 입력 → 이동 ────────────────────────────────
+function applyCoordInput() {
+  const latRaw = document.getElementById('input-lat').value.trim();
+  const lngRaw = document.getElementById('input-lng').value.trim();
+
+  clearCoordError();
+
+  const lat = parseFloat(latRaw);
+  const lng = parseFloat(lngRaw);
+
+  let hasError = false;
+
+  if (latRaw === '' || isNaN(lat) || lat < -90 || lat > 90) {
+    document.getElementById('input-lat').classList.add('error');
+    hasError = true;
+  }
+  if (lngRaw === '' || isNaN(lng) || lng < -180 || lng > 180) {
+    document.getElementById('input-lng').classList.add('error');
+    hasError = true;
+  }
+
+  if (hasError) {
+    showCoordError('위도 -90~90, 경도 -180~180 범위로 입력해주세요.');
+    return;
+  }
+
+  state.lat = lat;
+  state.lng = lng;
+  state.globalMin = null;
+  state.globalMax = null;
+
+  map.flyTo({ center: [lng, lat], zoom: Math.max(map.getZoom(), 9), essential: true });
+  updateGrid();
+  updateDisplay();
+  document.getElementById('hint').classList.add('hide');
+  setStatus('좌표 입력 완료. 다운로드 버튼을 누르세요.', '');
+}
+
+// 엔터키로도 이동 가능
+['input-lat', 'input-lng'].forEach(id => {
+  document.addEventListener('DOMContentLoaded', () => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('keydown', e => { if (e.key === 'Enter') applyCoordInput(); });
+  });
+});
+// DOMContentLoaded가 이미 지난 경우를 위해 직접도 바인딩
+window.addEventListener('load', () => {
+  ['input-lat', 'input-lng'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('keydown', e => { if (e.key === 'Enter') applyCoordInput(); });
+  });
+});
+
+// ─── N×N 그리드 셀 GeoJSON ───────────────────────────────
+function makeGridCells() {
+  const features = [];
+  const centerPt  = turf.point([state.lng, state.lat]);
+  const totalKm   = TILE_SIZE_KM * GRID_N;
+  const halfTotal = totalKm / 2;
+
+  const gridNLat = turf.destination(centerPt, halfTotal,   0, { units: 'kilometers' }).geometry.coordinates[1];
+  const gridWLng = turf.destination(centerPt, halfTotal, 270, { units: 'kilometers' }).geometry.coordinates[0];
+
+  const lats = [];
+  const lngs = [];
+  for (let i = 0; i <= GRID_N; i++) {
+    lats.push(turf.destination(
+      turf.point([state.lng, gridNLat]), TILE_SIZE_KM * i, 180, { units: 'kilometers' }
+    ).geometry.coordinates[1]);
+    lngs.push(turf.destination(
+      turf.point([gridWLng, state.lat]), TILE_SIZE_KM * i, 90, { units: 'kilometers' }
+    ).geometry.coordinates[0]);
+  }
+
+  const startDist    = 0;
+  const playableDist = Math.floor(GRID_N * 2 / 9);
+  const half         = (GRID_N - 1) / 2;
+
+  for (let row = 0; row < GRID_N; row++) {
+    for (let col = 0; col < GRID_N; col++) {
+      const n = lats[row];
+      const s = lats[row + 1];
+      const w = lngs[col];
+      const e = lngs[col + 1];
+
+      const dr   = Math.abs(row - half);
+      const dc   = Math.abs(col - half);
+      const dist = Math.max(dr, dc);
+
+      let fillColor, lineColor, fillOpacity;
+      if (dist <= startDist) {
+        fillColor = '#4464e1'; lineColor = '#6688ff'; fillOpacity = 0.25;
+      } else if (dist <= playableDist + startDist) {
+        fillColor = '#00cc44'; lineColor = '#00ff66'; fillOpacity = 0.18;
+      } else {
+        fillColor = '#888888'; lineColor = '#aaaaaa'; fillOpacity = 0.10;
+      }
+
+      features.push({
+        type: 'Feature',
+        properties: { row, col, fillColor, lineColor, fillOpacity },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[[w,n],[e,n],[e,s],[w,s],[w,n]]]
+        }
+      });
+    }
+  }
+
+  return { type: 'FeatureCollection', features };
+}
+
+function updateGrid() {
+  if (!map.getSource('grid-cells')) return;
+  map.getSource('grid-cells').setData(makeGridCells());
+  if (map.getSource('overview-box')) {
+    map.getSource('overview-box').setData(makeOverviewBox());
+  }
+  if (map.getSource('overview-labels')) {
+    map.getSource('overview-labels').setData(makeOverviewLabels());
+  }
+}
+
+// ─── Overview 박스 GeoJSON ───────────────────────────────
+function makeOverviewBox() {
+  const OV_GRID   = 9;
+  const regionKm  = TILE_SIZE_KM * GRID_N;
+  const totalKm   = regionKm * OV_GRID;
+  const halfKm    = totalKm / 2;
+  const centerPt  = turf.point([state.lng, state.lat]);
+
+  const nwLat = turf.destination(centerPt, halfKm,   0, { units: 'kilometers' }).geometry.coordinates[1];
+  const nwLng = turf.destination(centerPt, halfKm, 270, { units: 'kilometers' }).geometry.coordinates[0];
+
+  const lats = [];
+  const lngs = [];
+  for (let i = 0; i <= OV_GRID; i++) {
+    lats.push(turf.destination(
+      turf.point([state.lng, nwLat]), regionKm * i, 180, { units: 'kilometers' }
+    ).geometry.coordinates[1]);
+    lngs.push(turf.destination(
+      turf.point([nwLng, state.lat]), regionKm * i, 90, { units: 'kilometers' }
+    ).geometry.coordinates[0]);
+  }
+
+  const features = [];
+  for (let row = 0; row < OV_GRID; row++) {
+    for (let col = 0; col < OV_GRID; col++) {
+      const n = lats[row], s = lats[row+1];
+      const w = lngs[col], e = lngs[col+1];
+      features.push({
+        type: 'Feature',
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[[w,n],[e,n],[e,s],[w,s],[w,n]]]
+        },
+        properties: { col, row, label: `(${col},${OV_GRID - 1 - row})` }
+      });
+    }
+  }
+
+  return { type: 'FeatureCollection', features };
+}
+
+// 라벨용 Point GeoJSON (각 셀 중심점)
+function makeOverviewLabels() {
+  const OV_GRID   = 9;
+  const regionKm  = TILE_SIZE_KM * GRID_N;
+  const totalKm   = regionKm * OV_GRID;
+  const halfKm    = totalKm / 2;
+  const centerPt  = turf.point([state.lng, state.lat]);
+
+  const nwLat = turf.destination(centerPt, halfKm,   0, { units: 'kilometers' }).geometry.coordinates[1];
+  const nwLng = turf.destination(centerPt, halfKm, 270, { units: 'kilometers' }).geometry.coordinates[0];
+
+  const lats = [];
+  const lngs = [];
+  for (let i = 0; i <= OV_GRID; i++) {
+    lats.push(turf.destination(
+      turf.point([state.lng, nwLat]), regionKm * i, 180, { units: 'kilometers' }
+    ).geometry.coordinates[1]);
+    lngs.push(turf.destination(
+      turf.point([nwLng, state.lat]), regionKm * i, 90, { units: 'kilometers' }
+    ).geometry.coordinates[0]);
+  }
+
+  const features = [];
+  for (let row = 0; row < OV_GRID; row++) {
+    for (let col = 0; col < OV_GRID; col++) {
+      const n = lats[row], s = lats[row+1];
+      const w = lngs[col], e = lngs[col+1];
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [(w + e) / 2, (n + s) / 2] },
+        properties: { label: `(${col},${OV_GRID - 1 - row})` }
+      });
+    }
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+function updateDisplay() {
+  document.getElementById('disp-lng').textContent = state.lng.toFixed(5);
+  document.getElementById('disp-lat').textContent = state.lat.toFixed(5);
+  document.getElementById('disp-min').textContent = state.globalMin !== null ? state.globalMin + ' m' : '— m';
+  document.getElementById('disp-max').textContent = state.globalMax !== null ? state.globalMax + ' m' : '— m';
+}
+
+function setStatus(msg, cls) {
+  const el = document.getElementById('status-result');
+  el.textContent = msg;
+  el.className   = 'status ' + (cls || '');
+}
+
+function setProgress(pct, label) {
+  const wrap = document.getElementById('progress-wrap');
+  wrap.classList.toggle('visible', pct > 0 && pct < 100);
+  document.getElementById('progress-fill').style.width = pct + '%';
+  if (label) document.getElementById('progress-label').textContent = label;
+  const loadFill  = document.getElementById('load-progress-fill');
+  const loadLabel = document.getElementById('load-progress-label');
+  if (loadFill)  loadFill.style.width  = Math.min(100, pct) + '%';
+  if (loadLabel) loadLabel.textContent = Math.min(100, Math.round(pct)) + '%';
+}
+
+function setPipeStep(step) {
+  for (let i = 1; i <= 3; i++) {
+    const el = document.getElementById('pipe-step-' + i);
+    if (!el) continue;
+    el.classList.remove('active', 'done');
+    if (i < step)  el.classList.add('done');
+    if (i === step) el.classList.add('active');
+  }
+}
+
+function setBothBtnsDisabled(flag) {
+  document.getElementById('dl-btn-png').disabled = flag;
+  document.getElementById('dl-btn-raw').disabled = flag;
+  const ov = document.getElementById('dl-btn-overview');
+  if (ov) ov.disabled = flag;
+  const mg = document.getElementById('dl-btn-mega');
+  if (mg) mg.disabled = flag;
+}
+
+function initTileGrid() {
+  const g        = document.getElementById('tile-progress-grid');
+  const cellSize = Math.max(6, Math.min(16, Math.floor(240 / GRID_N)));
+  g.style.gridTemplateColumns = `repeat(${GRID_N}, ${cellSize}px)`;
+  g.innerHTML = '';
+  for (let i = 0; i < GRID_N * GRID_N; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'tile-cell';
+    cell.id = `tc-${i}`;
+    g.appendChild(cell);
+  }
+}
+
+function setTileCell(row, col, status) {
+  const cell = document.getElementById(`tc-${row * GRID_N + col}`);
+  if (cell) cell.className = 'tile-cell ' + status;
+}
+
+// ─── 타일 좌표 변환 ──────────────────────────────────────
+function long2tile(lon, zoom) { return Math.floor((lon + 180) / 360 * Math.pow(2, zoom)); }
+function lat2tile(lat, zoom)  { return Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, zoom)); }
+function tile2long(x, zoom)   { return x / Math.pow(2, zoom) * 360 - 180; }
+function tile2lat(y, zoom) {
+  const n = Math.PI - 2 * Math.PI * y / Math.pow(2, zoom);
+  return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+}
+
+// 소수 타일 좌표 (buildOverviewRawBuf 공통 활용)
+function lng2tileF(lng, zoom) {
+  return (lng + 180) / 360 * Math.pow(2, zoom);
+}
+function lat2tileF(lat, zoom) {
+  const s = Math.sin(lat * Math.PI / 180);
+  return (1 - Math.log((1 + s) / (1 - s)) / (2 * Math.PI)) / 2 * Math.pow(2, zoom);
+}
+function tileF2px(tileF, startTile) {
+  return (tileF - startTile) * MAPBOX_TILE_PX;
+}
+
+// ─── PNG 타일 다운로드 → RGBA pixels ────────────────────
+async function downloadPngToPixels(url) {
+  const res    = await fetch(url);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const blob   = await res.blob();
+  const bitmap = await createImageBitmap(blob);
+  const oc     = new OffscreenCanvas(MAPBOX_TILE_PX, MAPBOX_TILE_PX);
+  const ctx    = oc.getContext('2d');
+  ctx.drawImage(bitmap, 0, 0);
+  return ctx.getImageData(0, 0, MAPBOX_TILE_PX, MAPBOX_TILE_PX).data;
+}
+
+function rgbToVal(r, g, b) {
+  return r * 65536 + g * 256 + b;
+}
+
+// ─── bicubic 가중치 (Catmull-Rom) ────────────────────────
+function cubicWeight(t) {
+  const a = -0.5, at = Math.abs(t);
+  if (at < 1) return (a+2)*at*at*at - (a+3)*at*at + 1;
+  if (at < 2) return a*at*at*at - 5*a*at*at + 8*a*at - 4*a;
+  return 0;
+}
+
+// ════════════════════════════════════════════════════════
+// STEP1: 버퍼1 생성 (1024×1024)
+// ════════════════════════════════════════════════════════
+async function buildBuffer1(centerLng, centerLat, gridN) {
+  const totalKm = TILE_SIZE_KM * gridN;
+  const totalM  = totalKm * 1000;
+
+  const latIdx = Math.min(90, Math.round(Math.abs(centerLat)));
+  const mpp    = METERS_PER_PIXEL_BY_LAT[latIdx];
+
+  const tileM  = MAPBOX_TILE_PX * mpp;
+  const tilesN = Math.ceil(totalM / tileM) + 1;
+
+  const half     = totalKm / 2;
+  const centerPt = turf.point([centerLng, centerLat]);
+  const nwLng = turf.destination(centerPt, half, 270, { units: 'kilometers' }).geometry.coordinates[0];
+  const nwLat = turf.destination(centerPt, half,   0, { units: 'kilometers' }).geometry.coordinates[1];
+  const seLng = turf.destination(centerPt, half,  90, { units: 'kilometers' }).geometry.coordinates[0];
+  const seLat = turf.destination(centerPt, half, 180, { units: 'kilometers' }).geometry.coordinates[1];
+
+  const startX = long2tile(nwLng, FETCH_ZOOM);
+  const startY = lat2tile(nwLat,  FETCH_ZOOM);
+
+  const tileList = [];
+  for (let ty = 0; ty < tilesN; ty++)
+    for (let tx = 0; tx < tilesN; tx++)
+      tileList.push({ tx: startX + tx, ty: startY + ty, col: tx, row: ty });
+
+  document.getElementById('loading-sub').textContent =
+    `버퍼1: ${tilesN}×${tilesN} = ${tilesN*tilesN}장 다운로드 중...`;
+
+  const pixelMap = new Map();
+  await Promise.all(tileList.map(async ({ tx, ty, col, row }) => {
+    const url = `https://api.mapbox.com/v4/mapbox.terrain-rgb/${FETCH_ZOOM}/${tx}/${ty}@2x.pngraw?access_token=${MAPBOX_TOKEN}`;
+    try {
+      pixelMap.set(`${col},${row}`, await downloadPngToPixels(url));
+    } catch(e) {
+      console.warn(`타일 ${tx},${ty} 실패:`, e.message);
+    }
+  }));
+
+  const rawSize = tilesN * MAPBOX_TILE_PX;
+  const rawBuf  = new Int32Array(rawSize * rawSize);
+  for (let row = 0; row < tilesN; row++) {
+    for (let col = 0; col < tilesN; col++) {
+      const px = pixelMap.get(`${col},${row}`);
+      if (!px) continue;
+      const ox = col * MAPBOX_TILE_PX;
+      const oy = row * MAPBOX_TILE_PX;
+      for (let y = 0; y < MAPBOX_TILE_PX; y++)
+        for (let x = 0; x < MAPBOX_TILE_PX; x++) {
+          const si = (y * MAPBOX_TILE_PX + x) * 4;
+          rawBuf[(oy+y)*rawSize + (ox+x)] = rgbToVal(px[si], px[si+1], px[si+2]);
+        }
+    }
+  }
+
+  const nwTileXf = lng2tileF(nwLng, FETCH_ZOOM);
+  const nwTileYf = lat2tileF(nwLat, FETCH_ZOOM);
+  const seTileXf = lng2tileF(seLng, FETCH_ZOOM);
+  const seTileYf = lat2tileF(seLat, FETCH_ZOOM);
+
+  const cropX0  = tileF2px(nwTileXf, startX);
+  const cropY0  = tileF2px(nwTileYf, startY);
+  const cropX1  = tileF2px(seTileXf, startX);
+  const cropY1  = tileF2px(seTileYf, startY);
+  const cropPxW = cropX1 - cropX0;
+  const cropPxH = cropY1 - cropY0;
+
+  document.getElementById('loading-sub').textContent =
+    `버퍼1: crop(${cropX0.toFixed(1)},${cropY0.toFixed(1)})~(${cropX1.toFixed(1)},${cropY1.toFixed(1)}) → 1024×1024 bicubic...`;
+
+  const buf1 = new Int32Array(OUTPUT_PX * OUTPUT_PX);
+  for (let oy = 0; oy < OUTPUT_PX; oy++) {
+    for (let ox = 0; ox < OUTPUT_PX; ox++) {
+      const srcX = cropX0 + ox * cropPxW / (OUTPUT_PX - 1);
+      const srcY = cropY0 + oy * cropPxH / (OUTPUT_PX - 1);
+      const ix = Math.floor(srcX), iy = Math.floor(srcY);
+      const dx = srcX - ix, dy = srcY - iy;
+      let val = 0;
+      for (let m = -1; m <= 2; m++) {
+        const wy = cubicWeight(m - dy);
+        if (wy === 0) continue;
+        for (let n = -1; n <= 2; n++) {
+          const cx = Math.max(0, Math.min(rawSize - 1, ix + n));
+          const cy = Math.max(0, Math.min(rawSize - 1, iy + m));
+          val += rawBuf[cy * rawSize + cx] * cubicWeight(n - dx) * wy;
+        }
+      }
+      buf1[oy * OUTPUT_PX + ox] = Math.max(0, Math.min(16777215, Math.round(val)));
+    }
+  }
+
+  return { buf1, mpp };
+}
+
+// ─── STEP2: 버퍼2 (GRID_N×1024 × GRID_N×1024) bicubic 업샘플 ──
+function buildBuffer2(buf1, gridN) {
+  const buf2Size = gridN * OUTPUT_PX;
+  const buf2     = new Int32Array(buf2Size * buf2Size);
+
+  function sampleBuf1(sx, sy) {
+    const cx = Math.max(0, Math.min(OUTPUT_PX-1, Math.round(sx)));
+    const cy = Math.max(0, Math.min(OUTPUT_PX-1, Math.round(sy)));
+    return buf1[cy*OUTPUT_PX + cx];
+  }
+
+  for (let oy = 0; oy < buf2Size; oy++) {
+    for (let ox = 0; ox < buf2Size; ox++) {
+      const srcX = ox * (OUTPUT_PX-1) / (buf2Size-1);
+      const srcY = oy * (OUTPUT_PX-1) / (buf2Size-1);
+      const ix = Math.floor(srcX), iy = Math.floor(srcY);
+      const dx = srcX-ix, dy = srcY-iy;
+      let val = 0;
+      for (let m = -1; m <= 2; m++) {
+        const wy = cubicWeight(m-dy);
+        if (wy === 0) continue;
+        for (let n = -1; n <= 2; n++)
+          val += sampleBuf1(ix+n, iy+m) * cubicWeight(n-dx) * wy;
+      }
+      buf2[oy*buf2Size + ox] = Math.max(0, Math.min(16777215, Math.round(val)));
+    }
+  }
+  return { buf2, buf2Size };
+}
+
+// ─── STEP3: Gaussian blur ────────────────────────────────
+function applyGaussian(buf2, buf2Size) {
+  const SIGMA  = 3.0;
+  const RADIUS = Math.ceil(SIGMA * 3);
+  const KSIZE  = RADIUS * 2 + 1;
+  const kernel = new Float32Array(KSIZE);
+  let sum = 0;
+  for (let i = 0; i < KSIZE; i++) {
+    kernel[i] = Math.exp(-((i-RADIUS)**2) / (2*SIGMA*SIGMA));
+    sum += kernel[i];
+  }
+  for (let i = 0; i < KSIZE; i++) kernel[i] /= sum;
+
+  const tmp = new Float32Array(buf2Size * buf2Size);
+  for (let y = 0; y < buf2Size; y++)
+    for (let x = 0; x < buf2Size; x++) {
+      let s = 0;
+      for (let k = -RADIUS; k <= RADIUS; k++)
+        s += buf2[y*buf2Size + Math.max(0,Math.min(buf2Size-1,x+k))] * kernel[k+RADIUS];
+      tmp[y*buf2Size + x] = s;
+    }
+  for (let y = 0; y < buf2Size; y++)
+    for (let x = 0; x < buf2Size; x++) {
+      let s = 0;
+      for (let k = -RADIUS; k <= RADIUS; k++)
+        s += tmp[Math.max(0,Math.min(buf2Size-1,y+k))*buf2Size + x] * kernel[k+RADIUS];
+      buf2[y*buf2Size + x] = Math.max(0, Math.min(16777215, Math.round(s)));
+    }
+}
+
+// ─── STEP4: 버퍼2에서 타일 1개 추출 (Y플립) ─────────────
+function extractTile(buf2, buf2Size, gridRow, gridCol) {
+  const output = new Int32Array(OUTPUT_PX * OUTPUT_PX);
+  const ox = gridCol * OUTPUT_PX;
+  const oy = gridRow * OUTPUT_PX;
+  let minVal = Infinity, maxVal = -Infinity;
+
+  for (let y = 0; y < OUTPUT_PX; y++) {
+    for (let x = 0; x < OUTPUT_PX; x++) {
+      const v = buf2[(oy+y)*buf2Size + (ox+x)];
+      output[(OUTPUT_PX-1-y)*OUTPUT_PX + x] = v;
+      if (v > maxVal) maxVal = v;
+      if (v < minVal) minVal = v;
+    }
+  }
+
+  return {
+    output,
+    minM: (minVal - 100000) / 10,
+    maxM: (maxVal - 100000) / 10,
+  };
+}
+
+// ─── 노말맵 (Sobel) ──────────────────────────────────────
+function generateNormalMap(output, size, metersPerPixel = 1.0) {
+  const bytes = new Uint8Array(size * size * 3);
+  const hAt = (x, y) => {
+    const cx = Math.max(0, Math.min(size-1, x));
+    const cy = Math.max(0, Math.min(size-1, y));
+    return (output[cy*size + cx] - 100000) / 10;
+  };
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dX = (-hAt(x-1,y-1)+hAt(x+1,y-1)-hAt(x-1,y)*2+hAt(x+1,y)*2-hAt(x-1,y+1)+hAt(x+1,y+1)) / (8*metersPerPixel);
+      const dY = (-hAt(x-1,y-1)-hAt(x,y-1)*2-hAt(x+1,y-1)+hAt(x-1,y+1)+hAt(x,y+1)*2+hAt(x+1,y+1)) / (8*metersPerPixel);
+      const nx=-dX, ny=-dY, nz=1.0;
+      const len=Math.sqrt(nx*nx+ny*ny+nz*nz);
+      const i=(y*size+x)*3;
+      bytes[i]  =Math.round(((nx/len)*0.5+0.5)*255);
+      bytes[i+1]=Math.round(((ny/len)*0.5+0.5)*255);
+      bytes[i+2]=Math.round(((nz/len)*0.5+0.5)*255);
+    }
+  }
+  return bytes;
+}
+
+// ─── 타일 파일 블롭 생성 ─────────────────────────────────
+async function makeTileFiles(output, format, mpp) {
+  const normalBytes = generateNormalMap(output, OUTPUT_PX, mpp);
+  const normalBlob  = new Blob([normalBytes], { type: 'application/octet-stream' });
+
+  const LOW_PX    = 128;
+  const lowOutput = new Int32Array(LOW_PX * LOW_PX);
+  const lowBytes  = new Uint8Array(LOW_PX * LOW_PX * 3);
+  for (let oy = 0; oy < LOW_PX; oy++) {
+    for (let ox = 0; ox < LOW_PX; ox++) {
+      const srcX = ox*(OUTPUT_PX-1)/(LOW_PX-1), srcY = oy*(OUTPUT_PX-1)/(LOW_PX-1);
+      const ix=Math.floor(srcX), iy=Math.floor(srcY), dx=srcX-ix, dy=srcY-iy;
+      const clamp = (v,mx) => Math.min(v,mx);
+      const v=Math.round(
+        output[clamp(iy,OUTPUT_PX-1)*OUTPUT_PX+clamp(ix,OUTPUT_PX-1)]*(1-dx)*(1-dy)+
+        output[clamp(iy,OUTPUT_PX-1)*OUTPUT_PX+clamp(ix+1,OUTPUT_PX-1)]*dx*(1-dy)+
+        output[clamp(iy+1,OUTPUT_PX-1)*OUTPUT_PX+clamp(ix,OUTPUT_PX-1)]*(1-dx)*dy+
+        output[clamp(iy+1,OUTPUT_PX-1)*OUTPUT_PX+clamp(ix+1,OUTPUT_PX-1)]*dx*dy
+      );
+      lowOutput[oy*LOW_PX+ox] = v;
+      const i=(oy*LOW_PX+ox)*3;
+      lowBytes[i]=(v>>16)&0xFF; lowBytes[i+1]=(v>>8)&0xFF; lowBytes[i+2]=v&0xFF;
+    }
+  }
+  const lowBlob = new Blob([lowBytes], { type: 'application/octet-stream' });
+
+  const lowNormalBytes = generateNormalMap(lowOutput, LOW_PX, mpp * (OUTPUT_PX / LOW_PX));
+  const lowNormalBlob  = new Blob([lowNormalBytes], { type: 'application/octet-stream' });
+
+  let blob;
+  if (format === 'raw') {
+    const bytes = new Uint8Array(OUTPUT_PX * OUTPUT_PX * 3);
+    for (let i = 0; i < OUTPUT_PX*OUTPUT_PX; i++) {
+      const v=output[i];
+      bytes[i*3]=(v>>16)&0xFF; bytes[i*3+1]=(v>>8)&0xFF; bytes[i*3+2]=v&0xFF;
+    }
+    blob = new Blob([bytes], { type: 'application/octet-stream' });
+  } else {
+    const pixels = new Uint8ClampedArray(OUTPUT_PX*OUTPUT_PX*4);
+    for (let i = 0; i < OUTPUT_PX*OUTPUT_PX; i++) {
+      const v=output[i];
+      pixels[i*4]=v&0xFF; pixels[i*4+1]=(v>>8)&0xFF; pixels[i*4+2]=(v>>16)&0xFF; pixels[i*4+3]=255;
+    }
+    const canvas=document.createElement('canvas');
+    canvas.width=canvas.height=OUTPUT_PX;
+    const ctx=canvas.getContext('2d');
+    const imgData=ctx.createImageData(OUTPUT_PX,OUTPUT_PX);
+    imgData.data.set(pixels);
+    ctx.putImageData(imgData,0,0);
+    blob=await new Promise(res=>canvas.toBlob(res,'image/png'));
+  }
+
+  return { blob, normalBlob, lowBlob, lowNormalBlob };
+}
+
+// ─── Overview/Mega 공통: rawBuf + crop 샘플러 반환 ───────
+async function buildOverviewRawBuf(onStatus) {
+  const OV_GRID_    = 9;
+  const OVERVIEW_M_ = OV_GRID_ * GRID_N * TILE_SIZE_KM * 1000;
+  const halfKm      = OVERVIEW_M_ / 2 / 1000;
+  const centerPt    = turf.point([state.lng, state.lat]);
+  const nwLng = turf.destination(centerPt, halfKm, 270, { units: 'kilometers' }).geometry.coordinates[0];
+  const nwLat = turf.destination(centerPt, halfKm,   0, { units: 'kilometers' }).geometry.coordinates[1];
+  const seLng = turf.destination(centerPt, halfKm,  90, { units: 'kilometers' }).geometry.coordinates[0];
+  const seLat = turf.destination(centerPt, halfKm, 180, { units: 'kilometers' }).geometry.coordinates[1];
+
+  const nwTileX = lng2tileF(nwLng, OVERVIEW_ZOOM);
+  const nwTileY = lat2tileF(nwLat, OVERVIEW_ZOOM);
+  const seTileX = lng2tileF(seLng, OVERVIEW_ZOOM);
+  const seTileY = lat2tileF(seLat, OVERVIEW_ZOOM);
+
+  const startX = Math.floor(nwTileX);
+  const startY = Math.floor(nwTileY);
+  const endX   = Math.ceil(seTileX);
+  const endY   = Math.ceil(seTileY);
+  const tilesW = endX - startX;
+  const tilesH = endY - startY;
+
+  const tileList = [];
+  for (let ty = 0; ty < tilesH; ty++)
+    for (let tx = 0; tx < tilesW; tx++)
+      tileList.push({ tx: startX+tx, ty: startY+ty, col: tx, row: ty });
+
+  if (onStatus) onStatus(`zoom${OVERVIEW_ZOOM}: ${tilesW}×${tilesH}=${tilesW*tilesH}장 다운로드 중...`);
+
+  const pixelMap = new Map();
+  await Promise.all(tileList.map(async ({ tx, ty, col, row }) => {
+    const url = `https://api.mapbox.com/v4/mapbox.terrain-rgb/${OVERVIEW_ZOOM}/${tx}/${ty}@2x.pngraw?access_token=${MAPBOX_TOKEN}`;
+    try {
+      pixelMap.set(`${col},${row}`, await downloadPngToPixels(url));
+    } catch(e) {
+      console.warn(`overview 타일 ${tx},${ty} 실패:`, e.message);
+    }
+  }));
+
+  if (onStatus) onStatus('rawBuf 합성 중...');
+  await new Promise(r => setTimeout(r, 10));
+
+  const rawW   = tilesW * MAPBOX_TILE_PX;
+  const rawH   = tilesH * MAPBOX_TILE_PX;
+  const rawBuf = new Int32Array(rawW * rawH);
+  for (let row = 0; row < tilesH; row++) {
+    for (let col = 0; col < tilesW; col++) {
+      const px = pixelMap.get(`${col},${row}`);
+      if (!px) continue;
+      const ox = col * MAPBOX_TILE_PX, oy = row * MAPBOX_TILE_PX;
+      for (let y = 0; y < MAPBOX_TILE_PX; y++)
+        for (let x = 0; x < MAPBOX_TILE_PX; x++) {
+          const si = (y * MAPBOX_TILE_PX + x) * 4;
+          rawBuf[(oy+y)*rawW + (ox+x)] = rgbToVal(px[si], px[si+1], px[si+2]);
+        }
+    }
+  }
+
+  const cropX0  = tileF2px(nwTileX, startX);
+  const cropY0  = tileF2px(nwTileY, startY);
+  const cropX1  = tileF2px(seTileX, startX);
+  const cropY1  = tileF2px(seTileY, startY);
+  const cropPxW = cropX1 - cropX0;
+  const cropPxH = cropY1 - cropY0;
+
+  function sample(ox, oy, outW, outH) {
+    const srcX = cropX0 + ox * cropPxW / (outW - 1);
+    const srcY = cropY0 + oy * cropPxH / (outH - 1);
+    const ix = Math.floor(srcX), iy = Math.floor(srcY);
+    const dx = srcX - ix, dy = srcY - iy;
+    let val = 0;
+    for (let m = -1; m <= 2; m++) {
+      const wy = cubicWeight(m - dy);
+      if (wy === 0) continue;
+      for (let n = -1; n <= 2; n++) {
+        const cx = Math.max(0, Math.min(rawW-1, ix+n));
+        const cy = Math.max(0, Math.min(rawH-1, iy+m));
+        val += rawBuf[cy*rawW + cx] * cubicWeight(n - dx) * wy;
+      }
+    }
+    return Math.max(0, Math.min(16777215, Math.round(val)));
+  }
+
+  return { sample, rawW, rawH };
+}
+
+// ─── Mega Map 다운로드 ────────────────────────────────────
+const OV_GRID = 9;
+
+async function startMegaMapDownload() {
+  const btn      = document.getElementById('dl-btn-mega');
+  const statusEl = document.getElementById('status-mega');
+  setBothBtnsDisabled(true);
+  statusEl.textContent = '준비 중...';
+  statusEl.style.color = 'var(--muted)';
+
+  try {
+    const { sample } = await buildOverviewRawBuf(t => {
+      statusEl.textContent = t;
+    });
+
+    const MEGA    = OV_GRID * OUTPUT_PX;
+    const CELL_PX = OUTPUT_PX;
+
+    statusEl.textContent = '9216×9216 PNG 생성 중...';
+    await new Promise(r => setTimeout(r, 10));
+
+    const canvas  = document.createElement('canvas');
+    canvas.width  = canvas.height = MEGA;
+    const ctx     = canvas.getContext('2d');
+    const imgData = ctx.createImageData(MEGA, MEGA);
+    const pixels  = imgData.data;
+
+    for (let oy = 0; oy < MEGA; oy++) {
+      for (let ox = 0; ox < MEGA; ox++) {
+        const v  = sample(ox, oy, MEGA, MEGA);
+        const pi = (oy * MEGA + ox) * 4;
+        pixels[pi]   = (v >> 16) & 0xFF;
+        pixels[pi+1] = (v >>  8) & 0xFF;
+        pixels[pi+2] =  v        & 0xFF;
+        pixels[pi+3] = 255;
+      }
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+
+    // 각 셀: 반투명 보라색 채우기 + 테두리 + (col, row) 레이블
+    const fontSize   = Math.max(24, Math.round(CELL_PX * 0.055));
+    ctx.font         = `bold ${fontSize}px "Space Mono", monospace`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+
+    for (let row = 0; row < OV_GRID; row++) {
+      for (let col = 0; col < OV_GRID; col++) {
+        const x = col * CELL_PX;
+        const y = row * CELL_PX;
+
+        // 반투명 보라색 fill (짙게)
+        ctx.fillStyle = 'rgba(110, 0, 220, 0.52)';
+        ctx.fillRect(x, y, CELL_PX, CELL_PX);
+
+        // 셀 테두리
+        ctx.strokeStyle = 'rgba(220, 150, 255, 0.90)';
+        ctx.lineWidth   = 3;
+        ctx.strokeRect(x, y, CELL_PX, CELL_PX);
+
+        // 좌표 레이블 — 검정 배경 박스 + 흰 텍스트
+        const label = `(${col},${OV_GRID - 1 - row})`;
+        const cx    = x + CELL_PX / 2;
+        const cy    = y + CELL_PX / 2;
+
+        ctx.font = `bold ${fontSize}px "Space Mono", monospace`;
+
+        // 텍스트 배경 박스
+        const metrics  = ctx.measureText(label);
+        const tw       = metrics.width;
+        const th       = fontSize;
+        const pad      = fontSize * 0.35;
+        ctx.fillStyle  = 'rgba(0, 0, 0, 0.72)';
+        ctx.fillRect(cx - tw/2 - pad, cy - th/2 - pad, tw + pad*2, th + pad*2);
+
+        // 텍스트
+        ctx.shadowColor   = 'rgba(0, 0, 0, 1)';
+        ctx.shadowBlur    = 6;
+        ctx.fillStyle     = '#ffffff';
+        ctx.fillText(label, cx, cy);
+        ctx.shadowBlur    = 0;
+      }
+    }
+
+    // 외곽 테두리
+    ctx.strokeStyle = 'rgba(220, 150, 255, 1.0)';
+    ctx.lineWidth   = 5;
+    ctx.strokeRect(0, 0, MEGA, MEGA);
+
+    statusEl.textContent = 'PNG 인코딩 중... (잠시 기다려주세요)';
+    await new Promise(r => setTimeout(r, 10));
+
+    const tag = `${state.lat.toFixed(4)}_${state.lng.toFixed(4)}`;
+    canvas.toBlob(blob => {
+      const link = document.createElement('a');
+      link.href  = URL.createObjectURL(blob);
+      link.download = `megamap_9216_${tag}.png`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      statusEl.textContent = `✓ 9216×9216 · 82,944m × 82,944m`;
+      statusEl.style.color = 'var(--accent)';
+      setBothBtnsDisabled(false);
+    }, 'image/png');
+
+  } catch(e) {
+    console.error(e);
+    statusEl.textContent = '오류: ' + e.message;
+    statusEl.style.color = 'var(--danger)';
+    setBothBtnsDisabled(false);
+  }
+}
+
+// ─── Overview 다운로드 ────────────────────────────────────
+async function startOverviewDownload() {
+  const btn      = document.getElementById('dl-btn-overview');
+  const statusEl = document.getElementById('status-overview');
+  setBothBtnsDisabled(true);
+  btn.disabled = true;
+  statusEl.textContent = '준비 중...';
+  statusEl.style.color = 'var(--muted)';
+
+  try {
+    const { sample } = await buildOverviewRawBuf(t => {
+      statusEl.textContent = t;
+    });
+
+    const OVERVIEW_M_ = 3 * GRID_N * TILE_SIZE_KM * 1000;
+    const outMpp = OVERVIEW_M_ / OVERVIEW_SIZE;
+
+    statusEl.textContent = `bicubic crop → ${OVERVIEW_SIZE}×${OVERVIEW_SIZE}...`;
+    await new Promise(r => setTimeout(r, 10));
+
+    const output = new Int32Array(OVERVIEW_SIZE * OVERVIEW_SIZE);
+    let minVal = Infinity, maxVal = -Infinity;
+
+    for (let oy = 0; oy < OVERVIEW_SIZE; oy++) {
+      for (let ox = 0; ox < OVERVIEW_SIZE; ox++) {
+        const v = sample(ox, oy, OVERVIEW_SIZE, OVERVIEW_SIZE);
+        output[oy*OVERVIEW_SIZE + ox] = v;
+        if (v > maxVal) maxVal = v;
+        if (v < minVal) minVal = v;
+      }
+    }
+
+    const minM = ((minVal - 100000) / 10).toFixed(1);
+    const maxM = ((maxVal - 100000) / 10).toFixed(1);
+
+    function makeElevPng(out, size) {
+      const pixels = new Uint8ClampedArray(size*size*4);
+      for (let i = 0; i < size*size; i++) {
+        const v=out[i];
+        pixels[i*4]=(v>>16)&0xFF; pixels[i*4+1]=(v>>8)&0xFF;
+        pixels[i*4+2]=v&0xFF; pixels[i*4+3]=255;
+      }
+      const canvas=document.createElement('canvas');
+      canvas.width=canvas.height=size;
+      const ctx=canvas.getContext('2d');
+      const imgData=ctx.createImageData(size,size);
+      imgData.data.set(pixels); ctx.putImageData(imgData,0,0);
+      return new Promise(res=>canvas.toBlob(res,'image/png'));
+    }
+
+    function makeNormalPng(normalBytes, size) {
+      const pixels=new Uint8ClampedArray(size*size*4);
+      for (let i=0;i<size*size;i++){
+        pixels[i*4]=normalBytes[i*3]; pixels[i*4+1]=normalBytes[i*3+1];
+        pixels[i*4+2]=normalBytes[i*3+2]; pixels[i*4+3]=255;
+      }
+      const canvas=document.createElement('canvas');
+      canvas.width=canvas.height=size;
+      const ctx=canvas.getContext('2d');
+      const imgData=ctx.createImageData(size,size);
+      imgData.data.set(pixels); ctx.putImageData(imgData,0,0);
+      return new Promise(res=>canvas.toBlob(res,'image/png'));
+    }
+
+    statusEl.textContent = 'elev + normal PNG 생성 중...';
+    const elevBlob    = await makeElevPng(output, OVERVIEW_SIZE);
+    const normalBytes = generateNormalMap(output, OVERVIEW_SIZE, outMpp);
+    const normalBlob  = await makeNormalPng(normalBytes, OVERVIEW_SIZE);
+
+    const zip = new JSZip();
+    const tag = `${state.lat.toFixed(4)}_${state.lng.toFixed(4)}`;
+    zip.file('overview_rgb3u8_elev.png',   elevBlob);
+    zip.file('overview_rgb3u8_normal.png', normalBlob);
+    zip.file('overview_meta.txt',
+      `version=1\nzoom=${OVERVIEW_ZOOM}\ncoverM=${OVERVIEW_M_}\nmpp=${outMpp.toFixed(2)}\nminHeight=${minM}\nmaxHeight=${maxM}\n`);
+
+    const content = await zip.generateAsync({ type: 'blob' });
+    const link = document.createElement('a');
+    link.href  = URL.createObjectURL(content);
+    link.download = `overview_512_${tag}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    statusEl.textContent = `✓ ${OVERVIEW_M_}m×${OVERVIEW_M_}m  1px=${outMpp}m  min ${minM}m / max ${maxM}m`;
+    statusEl.style.color = 'var(--accent)';
+
+  } catch(e) {
+    console.error(e);
+    statusEl.textContent = '오류: ' + e.message;
+    statusEl.style.color = 'var(--danger)';
+  } finally {
+    setBothBtnsDisabled(false);
+    btn.disabled = false;
+  }
+}
+
+// ── 확인 모달 헬퍼 ──────────────────────────────────────
+function showConfirm(title, desc, onOk) {
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-desc').innerHTML    = desc;
+  const modal    = document.getElementById('confirm-modal');
+  const btnOk    = document.getElementById('confirm-ok');
+  const btnCancel= document.getElementById('confirm-cancel');
+  modal.classList.add('visible');
+
+  const close = () => modal.classList.remove('visible');
+  btnOk.onclick     = () => { close(); onOk(); };
+  btnCancel.onclick = () => close();
+}
+
+// ─── 메인 다운로드 ───────────────────────────────────────
+async function startDownload(format, onDone = null, cellOffset = null) {
+  setBothBtnsDisabled(true);
+  setStatus('', '');
+
+  const isPng  = format === 'png';
+  const ext    = isPng ? 'png' : 'raw';
+  const label  = isPng ? 'PNG' : 'RAW';
+  const total  = GRID_N * GRID_N;
+
+  initTileGrid();
+  setPipeStep(0);
+  document.getElementById('loading-overlay').classList.add('visible');
+  document.getElementById('loading-text').textContent = `${GRID_N}×${GRID_N} 하이트맵 생성 중`;
+  document.getElementById('loading-format-badge').innerHTML =
+    `<span class="format-badge ${format}">${label} &nbsp;|&nbsp; ${OUTPUT_PX}×${OUTPUT_PX}px / tile &nbsp;|&nbsp; zoom${FETCH_ZOOM}</span>`;
+
+  try {
+    // STEP 1
+    setPipeStep(1);
+    setProgress(5, '버퍼1: 전체 영역 다운로드 중...');
+    const { buf1, mpp } = await buildBuffer1(state.lng, state.lat, GRID_N);
+    setProgress(30, '버퍼1 완료 → 버퍼2 업샘플링 중...');
+
+    // STEP 2
+    setPipeStep(2);
+    document.getElementById('loading-sub').textContent =
+      `버퍼2: 1024 → ${GRID_N*OUTPUT_PX}px bicubic 업샘플링...`;
+    await new Promise(r => setTimeout(r, 10));
+    const { buf2, buf2Size } = buildBuffer2(buf1, GRID_N);
+    setProgress(55, '버퍼2 완료 → Gaussian blur 적용 중...');
+
+    // STEP 3
+    setPipeStep(3);
+    document.getElementById('loading-sub').textContent =
+      `Gaussian blur (${buf2Size}×${buf2Size}px 전체)...`;
+    await new Promise(r => setTimeout(r, 10));
+    applyGaussian(buf2, buf2Size);
+    setProgress(65, 'Gaussian 완료 → 타일 추출 중...');
+
+    const zip = new JSZip();
+    let globalMin = Infinity, globalMax = -Infinity;
+    let doneCount = 0;
+
+    // 버퍼2 전체 PNG
+    {
+      document.getElementById('loading-sub').textContent = `전체맵 PNG 생성 중 (${buf2Size}×${buf2Size})...`;
+      await new Promise(r => setTimeout(r, 10));
+      const pixels = new Uint8ClampedArray(buf2Size * buf2Size * 4);
+      for (let i = 0; i < buf2Size * buf2Size; i++) {
+        const v = buf2[i];
+        pixels[i*4]   = (v >> 16) & 0xFF;
+        pixels[i*4+1] = (v >>  8) & 0xFF;
+        pixels[i*4+2] =  v        & 0xFF;
+        pixels[i*4+3] = 255;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = buf2Size;
+      const ctx = canvas.getContext('2d');
+      const imgData = ctx.createImageData(buf2Size, buf2Size);
+      imgData.data.set(pixels);
+      ctx.putImageData(imgData, 0, 0);
+      const buf2Blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+      zip.file('fullmap_rgb3u8_elev.png', buf2Blob);
+    }
+
+    // overview_buf1
+    {
+      document.getElementById('loading-sub').textContent =
+        'overview_buf1: 82,944m 영역 다운로드 중...';
+      const { sample: ovSample } = await buildOverviewRawBuf(null);
+
+      const OV_PX  = OUTPUT_PX;
+      const pixels = new Uint8ClampedArray(OV_PX * OV_PX * 4);
+      for (let oy = 0; oy < OV_PX; oy++) {
+        for (let ox = 0; ox < OV_PX; ox++) {
+          const v = ovSample(ox, oy, OV_PX, OV_PX);
+          const i = (oy * OV_PX + ox) * 4;
+          pixels[i]   = (v >> 16) & 0xFF;
+          pixels[i+1] = (v >>  8) & 0xFF;
+          pixels[i+2] =  v        & 0xFF;
+          pixels[i+3] = 255;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = OV_PX;
+      const ctx = canvas.getContext('2d');
+      const imgData = ctx.createImageData(OV_PX, OV_PX);
+      imgData.data.set(pixels);
+      ctx.putImageData(imgData, 0, 0);
+      const buf1Blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+      zip.file('overview_buf1_rgb3u8_elev.png', buf1Blob);
+    }
+
+    // 타일별 추출
+    // cellOffset: 셀 클릭 시 (cellCol-4, cellDisplayY-4) 기준 오프셋
+    const baseOX = cellOffset ? cellOffset.ox * GRID_N : 0;
+    const baseOY = cellOffset ? cellOffset.oy * GRID_N : 0;
+
+    for (let row = 0; row < GRID_N; row++) {
+      for (let col = 0; col < GRID_N; col++) {
+        setTileCell(row, col, 'active');
+
+        const flippedRow = GRID_N - 1 - row;
+        const tileX = baseOX + col;
+        const tileY = baseOY + flippedRow;
+        document.getElementById('loading-sub').textContent =
+          `tile_${tileX}_${tileY} 추출 중... (${doneCount+1}/${total})`;
+
+        try {
+          const { output, minM, maxM } = extractTile(buf2, buf2Size, row, col);
+          const { blob, normalBlob, lowBlob, lowNormalBlob } = await makeTileFiles(output, format, mpp);
+
+          zip.file(`tile_${tileX}_${tileY}_rgb3u8_elev.${ext}`, blob);
+          zip.file(`tile_${tileX}_${tileY}_rgb3u8_normal.raw`,     normalBlob);
+          zip.file(`tile_${tileX}_${tileY}_rgb3u8_elev_low.raw`,   lowBlob);
+          zip.file(`tile_${tileX}_${tileY}_rgb3u8_normal_low.raw`, lowNormalBlob);
+          zip.file(`tile_${tileX}_${tileY}_meta.txt`,
+            `version=1\nminHeight=${minM.toFixed(4)}\nmaxHeight=${maxM.toFixed(4)}\n`);
+
+          if (minM < globalMin) globalMin = minM;
+          if (maxM > globalMax) globalMax = maxM;
+          setTileCell(row, col, 'done');
+
+        } catch (e) {
+          console.error(`tile_${tileX}_${tileY} 오류:`, e);
+          setTileCell(row, col, 'error');
+        }
+
+        doneCount++;
+        const pct = 65 + Math.round(doneCount / total * 30);
+        setProgress(pct, `타일 ${doneCount}/${total} 완료`);
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    // ZIP 압축
+    document.getElementById('loading-text').textContent = 'ZIP 압축 중...';
+    document.getElementById('loading-sub').textContent  = '잠시만 기다려주세요...';
+    setProgress(97, 'ZIP 생성 중...');
+
+    const zipContent = await zip.generateAsync({ type: 'blob' });
+    const link = document.createElement('a');
+    link.href  = URL.createObjectURL(zipContent);
+    link.download = `heightmap_${label}_${GRID_N}x${GRID_N}_${state.lat.toFixed(4)}_${state.lng.toFixed(4)}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    state.globalMin = Math.round(globalMin * 10) / 10;
+    state.globalMax = Math.round(globalMax * 10) / 10;
+    updateDisplay();
+
+    setProgress(100, '완료!');
+    setStatus(`✓ ${label} ${total}개 완료  min ${state.globalMin}m / max ${state.globalMax}m`, 'ok');
+
+  } catch (e) {
+    console.error(e);
+    setStatus('오류: ' + e.message, 'err');
+  } finally {
+    setBothBtnsDisabled(false);
+    document.getElementById('loading-overlay').classList.remove('visible');
+    setTimeout(() => setProgress(0), 1500);
+    if (onDone) onDone();
+  }
+}
+</script>
+</body>
+</html>
