@@ -523,6 +523,7 @@ async function debugRiverCarving() {
 // 전체 min/max 정규화 후 8비트로 저장
 // ---------------------------------------------------------------------------------------
 function debugSaveHeightPng(buf2, buf2Size, filename) {
+	
     let min = Infinity, max = -Infinity;
     for (let i = 0; i < buf2.length; i++) {
         if (buf2[i] < min) min = buf2[i];

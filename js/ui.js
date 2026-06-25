@@ -22,6 +22,10 @@ async function startDownload(format, onDone, cellOffset, centerLng, centerLat) {
     ' &nbsp;|&nbsp; ' + TILE_PX + '×' + TILE_PX +
     'px / tile &nbsp;|&nbsp; zoom' + FETCH_ZOOM + '</span>';
 
+
+  let baseHeightBuf = null;
+  let projCache = null;
+
   try {
     setPipeStep(1); 
     setProgress(5, '버퍼1: 전체 영역 다운로드 중...');
@@ -92,8 +96,10 @@ async function startDownload(format, onDone, cellOffset, centerLng, centerLat) {
 			const HW = 4;
 			applyWaterMask(buf2, buf2Size, featureBuf, waterText);           // ✅ water 폐곡선 마스크
 			applyWaterwayMask(buf2Size, featureBuf, waterwayText, HW);       // ✅ waterway 보완 (추가)
-			await applyRiverCarving(buf2, buf2Size, featureBuf, waterwayText, 150, HW); // ✅ HW 파라미터도 통일
-
+			const result = await applyRiverCarving(buf2, buf2Size, featureBuf, waterwayText, 1);
+			baseHeightBuf = result.baseHeightBuf;
+			projCache     = result.projCache;
+ 
 			setProgress(78, '강 파기 완료');
 			if (flattenRiverDesc) flattenRiverDesc.textContent = waterCsvFile.name + ' · 완료 ✓';
 		} catch(e) {
@@ -106,11 +112,13 @@ async function startDownload(format, onDone, cellOffset, centerLng, centerLat) {
 		setProgress(78, '강 파기 스킵');
 	}
 
+	//debugSaveHeightPng(buf2, buf2Size, 'river_caving.png');
+
+	//return;
+	
 	// 스텝5: 출력
 	setPipeStep(5);
 	
-	//return;
-
     const zip = new JSZip();
     let globalMin = Infinity, globalMax = -Infinity, doneCount = 0;
 
@@ -175,7 +183,8 @@ async function startDownload(format, onDone, cellOffset, centerLng, centerLat) {
         try {
 			const { output, featureTile, minM, maxM } = extractTile(buf2, buf2Size, featureBuf, row, col);
 			const offset = getHeightOffset();
-			const { blob, normalBlob, lowBlob, lowNormalBlob, featureBlob, lowFeatureBlob }  = await makeTileFiles(output, featureTile, format, mpp, offset);
+			const { blob, normalBlob, lowBlob, lowNormalBlob, featureBlob, lowFeatureBlob, waterMeshBlob }
+						= await makeTileFiles(output, featureTile, format, mpp, offset);
 
 			const elevName = format === 'raw'
 			? 'tile_' + tileX + '_' + tileY + '_r32f_elev.raw'
@@ -193,6 +202,10 @@ async function startDownload(format, onDone, cellOffset, centerLng, centerLat) {
 			
 			zip.file('tile_' + tileX + '_' + tileY + '_u8_feature.raw',     featureBlob);
 			zip.file('tile_' + tileX + '_' + tileY + '_u8_feature_low.raw', lowFeatureBlob);
+			zip.file('tile_' + tileX + '_' + tileY + '_water_mesh.raw', waterMeshBlob);
+
+			const waterHeightBlob = generateWaterHeightBlob(featureTile, TILE_PX, buf2, buf2Size, projCache, row, col);
+			zip.file('tile_' + tileX + '_' + tileY + '_water_height.raw', waterHeightBlob);
 
 			if (minM < globalMin) globalMin = minM;
 			if (maxM > globalMax) globalMax = maxM;
@@ -239,207 +252,6 @@ async function startDownload(format, onDone, cellOffset, centerLng, centerLat) {
     setTimeout(function() { setProgress(0); }, 1500);
     if (onDone) onDone();
   }
-}
-
-// ─── buf2 로드 후 파이프라인 재개 ────────────────────────
-async function loadBuf2AndResume(format) {
-	
-    const rawFile  = document.getElementById('dbg-buf2-raw').files[0];
-    const metaFile = document.getElementById('dbg-buf2-meta').files[0];
-
-	const csvFile      = getRoadCsvFile();
-	const waterCsvFile    = getWaterCsvFile();
-	const waterwayCsvFile = getWaterwayCsvFile();
-
-    if (!rawFile || !metaFile) {
-        alert('raw 파일과 meta txt 파일을 모두 선택하세요.');
-        return;
-    }
-	
-	if (!csvFile) {
-		alert('도로 평탄화 파일이 없습니다.');
-		return;
-	}
-	
-	if (!waterCsvFile || !waterwayCsvFile) {
-		alert('강줄기, 강유역 파일이 없습니다.');
-		return;
-	}
-	
-
-    // ── 메타 파싱 ─────────────────────────────────────────
-    const metaText = await metaFile.text();
-    const metaMap  = {};
-    metaText.split('\n').forEach(line => {
-        const [k, v] = line.split('=');
-        if (k && v) metaMap[k.trim()] = v.trim();
-    });
-
-    const buf2Size = parseInt(metaMap['buf2Size']);
-    const mpp      = parseFloat(metaMap['mpp']);
-
-    if (!buf2Size || isNaN(mpp)) {
-        alert('meta 파일 파싱 실패.');
-        return;
-    }
-
-    // ── Raw → Int32Array 복원 ─────────────────────────────
-    const arrayBuffer = await rawFile.arrayBuffer();
-    const buf2        = new Int32Array(arrayBuffer);
-
-    if (buf2.length !== buf2Size * buf2Size) {
-        alert('buf2 크기 불일치. raw 파일이 올바른지 확인하세요.\n'
-            + '예상: ' + (buf2Size * buf2Size) + '  실제: ' + buf2.length);
-        return;
-    }
-
-    // ── FeatureBuf 새로 할당 ──────────────────────────────
-    const featureBuf = new Uint8Array(buf2Size * buf2Size);
-
-    // ── 이하 startDownload() 의 STEP4~ 그대로 재개 ───────
-    setBothBtnsDisabled(true);
-    setStatus('', '');
-    initTileGrid();
-    setPipeStep(0);
-    document.getElementById('loading-overlay').classList.add('visible');
-    document.getElementById('loading-text').textContent = '디버그 모드: buf2 로드 완료';
-
-    try {
-        // 스텝4: 도로 평탄화
-        setPipeStep(4);
-        const flattenDesc  = document.getElementById('pipe-flatten-desc');
-
-        if (csvFile) {
-            if (flattenDesc) flattenDesc.textContent = csvFile.name + ' · 적용 중...';
-            setProgress(65, '도로 평탄화 적용 중...');
-            try {
-                const csvText = await csvFile.text();
-                applyRoadFlatten(buf2, buf2Size, featureBuf, csvText);
-                setProgress(70, '도로 평탄화 완료');
-                if (flattenDesc) flattenDesc.textContent = csvFile.name + ' · 완료 ✓';
-            } catch(e) {
-                console.warn('도로 평탄화 실패:', e.message);
-                if (flattenDesc) flattenDesc.textContent = '오류: ' + e.message;
-            }
-        } else {
-            if (flattenDesc) flattenDesc.textContent = '도로 CSV 없음 · 스킵';
-            setProgress(70, '평탄화 스킵');
-        }
-
-        // 스텝5: 강 파기
-        const flattenRiverDesc = document.getElementById('pipe-river-flatten-desc');
-
-        if (waterCsvFile && waterwayCsvFile) {
-            if (flattenRiverDesc) flattenRiverDesc.textContent = waterCsvFile.name + ' · 적용 중...';
-            setProgress(72, '강 파기 적용 중...');
-            try {
-                const waterText    = await waterCsvFile.text();
-                const waterwayText = await waterwayCsvFile.text();
-                const HW = 2;
-				
-                applyWaterMask(buf2, buf2Size, featureBuf, waterText);
-                applyWaterwayMask(buf2Size, featureBuf, waterwayText, HW);
-				
-                applyRiverCarving(buf2, buf2Size, featureBuf, waterwayText, 80, HW);
-				
-                setProgress(78, '강 파기 완료');
-                if (flattenRiverDesc) flattenRiverDesc.textContent = waterCsvFile.name + ' · 완료 ✓';
-            } catch(e) {
-                console.warn('강 파기 실패:', e.message);
-                if (flattenRiverDesc) flattenRiverDesc.textContent = '오류: ' + e.message;
-            }
-        } else {
-            if (flattenRiverDesc) flattenRiverDesc.textContent = 'CSV 없음 · 스킵';
-            setProgress(78, '강 파기 스킵');
-        }
-		
-        //setProgress(100, '완료!');
-
-		//debugSaveHeightPng(buf2, buf2Size, 'dbg_river_height.png');
-		return;
-		
-		/*
-        // 스텝5: 출력
-        setPipeStep(5);
-        const zip = new JSZip();
-        let globalMin = Infinity, globalMax = -Infinity, doneCount = 0;
-        const total   = GRID_N * GRID_N;
-        const offset  = getHeightOffset();
-        const label   = format === 'png' ? 'PNG' : 'Float32 RAW';
-
-        for (let row = 0; row < GRID_N; row++) {
-            for (let col = 0; col < GRID_N; col++) {
-                setTileCell(row, col, 'active');
-                const flippedRow = GRID_N - 1 - row;
-                const tileX = col;
-                const tileY = flippedRow;
-
-                try {
-                    const { output, featureTile, minM, maxM } = extractTile(buf2, buf2Size, featureBuf, row, col);
-                    const { blob, normalBlob, lowBlob, lowNormalBlob, featureBlob, lowFeatureBlob }
-                        = await makeTileFiles(output, featureTile, format, mpp, offset);
-
-                    const elevName = format === 'raw'
-                        ? 'tile_' + tileX + '_' + tileY + '_r32f_elev.raw'
-                        : 'tile_' + tileX + '_' + tileY + '_rgb3u8_elev.png';
-
-                    zip.file(elevName,                                                  blob);
-                    zip.file('tile_' + tileX + '_' + tileY + '_rgb3u8_normal.raw',     normalBlob);
-                    zip.file('tile_' + tileX + '_' + tileY + '_rgb3u8_elev_low.raw',   lowBlob);
-                    zip.file('tile_' + tileX + '_' + tileY + '_rgb3u8_normal_low.raw', lowNormalBlob);
-                    zip.file('tile_' + tileX + '_' + tileY + '_meta.txt',
-                        'version=1\n' +
-                        'minHeight='    + (minM + offset).toFixed(4) + '\n' +
-                        'maxHeight='    + (maxM + offset).toFixed(4) + '\n' +
-                        'heightOffset=' + offset.toFixed(4)          + '\n');
-                    zip.file('tile_' + tileX + '_' + tileY + '_u8_feature.raw',     featureBlob);
-                    zip.file('tile_' + tileX + '_' + tileY + '_u8_feature_low.raw', lowFeatureBlob);
-
-                    if (minM < globalMin) globalMin = minM;
-                    if (maxM > globalMax) globalMax = maxM;
-                    setTileCell(row, col, 'done');
-                } catch(e) {
-                    console.error('tile 오류:', e);
-                    setTileCell(row, col, 'error');
-                }
-
-                doneCount++;
-                setProgress(78 + Math.round(doneCount / total * 19),
-                    '타일 ' + doneCount + '/' + total + ' 완료');
-                await new Promise(r => setTimeout(r, 0));
-            }
-        }
-
-        document.getElementById('loading-text').textContent = 'ZIP 압축 중...';
-        setProgress(97, 'ZIP 생성 중...');
-
-        const zipContent = await zip.generateAsync({ type: 'blob' });
-        const link       = document.createElement('a');
-        link.href        = URL.createObjectURL(zipContent);
-        link.download    = 'dbg_heightmap_' + label + '_' + GRID_N + 'x' + GRID_N + '.zip';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-
-        state.globalMin = Math.round(globalMin * 10) / 10;
-        state.globalMax = Math.round(globalMax * 10) / 10;
-        updateDisplay();
-        setProgress(100, '완료!');
-        setStatus('✓ 디버그 ' + label + ' ' + total + '개 완료', 'ok');
-		
-		
-		*/
-	
-	
-
-    } catch(e) {
-        console.error(e);
-        setStatus('오류: ' + e.message, 'err');
-    } finally {
-        setBothBtnsDisabled(false);
-        document.getElementById('loading-overlay').classList.remove('visible');
-        setTimeout(() => setProgress(0), 1500);
-    }
 }
 
 // ─── buf2 덤프 저장 ───────────────────────────────────────

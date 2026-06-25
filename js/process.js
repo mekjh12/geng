@@ -506,9 +506,145 @@ async function makeTileFiles(output, featureTile, format, mpp, heightOffset) {
 		{ type: 'application/octet-stream' }
 	);
 
-	return { blob, normalBlob, lowBlob, lowNormalBlob, featureBlob, lowFeatureBlob };
+	// ── 수면 메시 RAW ─────────────────────────────────────	
+    const waterMeshBlob = generateWaterMeshFromFeatureTile(featureTile, TILE_PX);
+
+    return { blob, normalBlob, lowBlob, lowNormalBlob, featureBlob, lowFeatureBlob, waterMeshBlob };
 }
 
+function generateWaterHeightBlob(featureTile, TILE_PX, buf2, buf2Size, projCache, tileRow, tileCol) {
+    const MASK_SIZE  = 64;
+    const VERT_SIZE  = MASK_SIZE + 1;       // 65
+    const CELL_SIZE  = (TILE_PX - 1) / MASK_SIZE;
+    const TILE_SIZE  = TILE_PX - 1;
+    const tilePixelX = tileCol * TILE_SIZE;
+    const tilePixelY = tileRow * TILE_SIZE;
+
+    const heights = new Float32Array(VERT_SIZE * VERT_SIZE);
+
+    // 1. 각 버텍스에서 투영점(중심선) 고도 샘플링
+    for (let vy = 0; vy < VERT_SIZE; vy++) {
+        for (let vx = 0; vx < VERT_SIZE; vx++) {
+            const px = Math.min(Math.round(vx * CELL_SIZE), TILE_SIZE);
+            const py = Math.min(Math.round(vy * CELL_SIZE), TILE_SIZE);
+
+            const flippedY  = (TILE_PX - 1 - py);
+            const globalIdx = (tilePixelY + flippedY) * buf2Size + (tilePixelX + px);
+
+            const proj = projCache[globalIdx];
+            if (proj) {
+                const centerIdx = proj.qy * buf2Size + proj.qx;
+                heights[vy * VERT_SIZE + vx] = (buf2[centerIdx] - 100000) / 10.0;
+            } else {
+                heights[vy * VERT_SIZE + vx] = 0;  // 미채움 표시
+            }
+        }
+    }
+
+    // 2. 0인 셀을 주변값으로 채우기 (4방향 평균 반복 확산)
+    const filled = new Float32Array(heights);
+    for (let pass = 0; pass < 8; pass++) {
+        let changed = false;
+        for (let vy = 0; vy < VERT_SIZE; vy++) {
+            for (let vx = 0; vx < VERT_SIZE; vx++) {
+                if (filled[vy * VERT_SIZE + vx] !== 0) continue;
+
+                let sum = 0, cnt = 0;
+                if (vx > 0           && filled[vy * VERT_SIZE + (vx-1)] !== 0) { sum += filled[vy * VERT_SIZE + (vx-1)]; cnt++; }
+                if (vx < VERT_SIZE-1 && filled[vy * VERT_SIZE + (vx+1)] !== 0) { sum += filled[vy * VERT_SIZE + (vx+1)]; cnt++; }
+                if (vy > 0           && filled[(vy-1) * VERT_SIZE + vx]  !== 0) { sum += filled[(vy-1) * VERT_SIZE + vx];  cnt++; }
+                if (vy < VERT_SIZE-1 && filled[(vy+1) * VERT_SIZE + vx]  !== 0) { sum += filled[(vy+1) * VERT_SIZE + vx];  cnt++; }
+
+                if (cnt > 0) { filled[vy * VERT_SIZE + vx] = sum / cnt; changed = true; }
+            }
+        }
+        if (!changed) break;  // 더 채울 게 없으면 조기 종료
+    }
+
+    return new Blob([filled.buffer], { type: 'application/octet-stream' });
+}
+
+// featureTile(1025×1025) 기반 수면 메시 생성
+function generateWaterMeshFromFeatureTile(featureTile, TILE_PX) {
+    const MASK_SIZE = 64;
+    const CELL_SIZE = (TILE_PX - 1) / MASK_SIZE;  // 1024 / 64 = 16
+
+    // 1. 64×64 마스크 생성
+    const mask = new Uint8Array(MASK_SIZE * MASK_SIZE);
+    let riverCellCount = 0;
+
+    for (let my = 0; my < MASK_SIZE; my++) {
+        for (let mx = 0; mx < MASK_SIZE; mx++) {
+            const x0 = Math.floor(mx * CELL_SIZE);
+            const x1 = Math.floor((mx + 1) * CELL_SIZE);
+            const y0 = Math.floor(my * CELL_SIZE);
+            const y1 = Math.floor((my + 1) * CELL_SIZE);
+
+            let hasRiver = false;
+            outer:
+            for (let py = y0; py < y1; py++) {
+                for (let px = x0; px < x1; px++) {
+                    if (featureTile && (featureTile[py * TILE_PX + px] & FeatureFlags.RIVER) !== 0) {
+                        hasRiver = true;
+                        break outer;
+                    }
+                }
+            }
+            if (hasRiver) riverCellCount++;
+            mask[my * MASK_SIZE + mx] = hasRiver ? 1 : 0;
+        }
+    }
+
+    console.log(`[WaterMesh] 강 셀 ${riverCellCount} / ${MASK_SIZE * MASK_SIZE}`);
+
+    // 2. 버텍스/인덱스 생성
+    const vertexMap = new Int32Array((MASK_SIZE + 1) * (MASK_SIZE + 1)).fill(-1);
+    const vertices  = [];
+    const indices   = [];
+
+    const getOrAddVertex = (vx, vy) => {
+        const key = vy * (MASK_SIZE + 1) + vx;
+        if (vertexMap[key] !== -1) return vertexMap[key];
+        const idx = vertices.length / 2;
+        vertices.push(vx / MASK_SIZE);  // 0.0 ~ 1.0
+        vertices.push(vy / MASK_SIZE);
+        vertexMap[key] = idx;
+        return idx;
+    };
+
+    for (let my = 0; my < MASK_SIZE; my++) {
+        for (let mx = 0; mx < MASK_SIZE; mx++) {
+            if (mask[my * MASK_SIZE + mx] === 0) continue;
+            const v00 = getOrAddVertex(mx,     my    );
+            const v10 = getOrAddVertex(mx + 1, my    );
+            const v01 = getOrAddVertex(mx,     my + 1);
+            const v11 = getOrAddVertex(mx + 1, my + 1);
+            indices.push(v00, v10, v11);
+            indices.push(v00, v11, v01);
+        }
+    }
+
+    const vertexCount = vertices.length / 2;
+    const indexCount  = indices.length;
+    console.log(`[WaterMesh] 버텍스 ${vertexCount}, 인덱스 ${indexCount}, 쿼드 ${indexCount / 6}`);
+
+    // 3. 바이너리 패킹
+    const byteLength = 8 + vertexCount * 8 + indexCount * 4;
+    const buffer     = new ArrayBuffer(byteLength);
+    const view       = new DataView(buffer);
+    let offset = 0;
+
+    view.setUint32(offset, vertexCount, true); offset += 4;
+    view.setUint32(offset, indexCount,  true); offset += 4;
+    for (let i = 0; i < vertices.length; i++) {
+        view.setFloat32(offset, vertices[i], true); offset += 4;
+    }
+    for (let i = 0; i < indices.length; i++) {
+        view.setUint32(offset, indices[i], true); offset += 4;
+    }
+
+    return new Blob([buffer], { type: 'application/octet-stream' });
+}
 
 // ─── Overview / MegaMap 공통 rawBuf 샘플러 ───────────────────────────────────
 // Overview(512×512) 및 MegaMap(9216×9216) 생성에 공통으로 사용하는 함수.

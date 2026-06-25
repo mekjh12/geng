@@ -1,14 +1,14 @@
-function applyRiverCarving(buf2, buf2Size, featureBuf, waterwayText, maxDepth = 150, waterwayHalfWidth = 2) {
+function applyRiverCarving(buf2, buf2Size, featureBuf, waterwayText, iterations = 1) {
     const SCALE     = buf2Size / 1081;
     const CELL_SIZE = 64;
     const COLS      = Math.ceil(buf2Size / CELL_SIZE);
     const ROWS      = Math.ceil(buf2Size / CELL_SIZE);
 
-    // 1. 강 영역 세그먼트 분리
+    // 강 유역 세그먼트 분리 (연결 성분 분석)
     const { labels, totalRivers } = computeRiverLabels(featureBuf, buf2Size);
-    console.log(`=== 강 영역 세그먼트 완료: 총 ${totalRivers}개의 독립된 수계 발견 ===`);
+    console.log(`=== 강 유역 세그먼트 완료: 총 ${totalRivers}개 수계 발견 ===`);
 
-    // 강줄기 벡터 데이터 파싱
+    // 강줄기 벡터 데이터 파싱 및 격자 등록
     const segments = parseSegments(waterwayText, SCALE);
     if (segments.length === 0) return;
 
@@ -16,13 +16,10 @@ function applyRiverCarving(buf2, buf2Size, featureBuf, waterwayText, maxDepth = 
     const grid = buildGrid(segments, COLS, ROWS, CELL_SIZE);
 
     // 강 가장자리 경계 거리 계산
-    const { dist: distToBorder, distBuckets } = computeBorderDist(featureBuf, buf2Size);
-	
-	//downloadDistBucketsAsPNG(distBuckets, distToBorder, buf2Size, 'debug_dist_buckets.png');
-		
+    const { dist: distToBorder } = computeBorderDist(featureBuf, buf2Size);
     const smoothedDist = gaussianBlurDist(distToBorder, featureBuf, buf2Size, 2.0);
 
-    // 2. 투영점 사전 캐싱
+    // 투영점 사전 캐싱
     const projCache = new Array(buf2Size * buf2Size).fill(null);
     for (let py = 0; py < buf2Size; py++) {
         for (let px = 0; px < buf2Size; px++) {
@@ -33,117 +30,163 @@ function applyRiverCarving(buf2, buf2Size, featureBuf, waterwayText, maxDepth = 
         }
     }
 
-    // 3. 유역별 최저 고도 계산
-    const baseHeightBuf = computeRiverMinHeights(labels, totalRivers, featureBuf, projCache, buf2, buf2Size);
+    // 유역별 평균 고도 계산
+    const baseHeightBuf = computeRiverAvgHeights(labels, totalRivers, featureBuf, projCache, buf2, buf2Size);
+    console.log(`=== (1) 유역별 최저 고도 계산 완료 ===`);
 
-    // ── 1단계: 침식 ─────────────────────────────────────────────
-    // 유역별 최저 고도로 강 내부 픽셀을 일괄 평탄화
-    console.log("=== 1단계: 침식 적용 (유역별 최저고도 평탄화) ===");
-    const doubleHalfWidth = waterwayHalfWidth * 2;
-    for (let py = 0; py < buf2Size; py++) {
-        for (let px = 0; px < buf2Size; px++) {
-            const idx = py * buf2Size + px;
-            if ((featureBuf[idx] & 0x01) === 0) continue;
+    // 침식: 강 픽셀을 smoothedDist만큼 파내기
+    erodeRiver(buf2, buf2Size, featureBuf, smoothedDist, baseHeightBuf);
+    console.log(`=== (2) 침식 완료 ===`);
 
-            const D = smoothedDist[idx];
-            const result = projCache[idx];
-            if (!result) continue;
+    // 강 경계 부드럽게 하기
+    smoothRiverBorders(buf2, featureBuf, buf2Size, 1.5);
+    smoothRiverBorders(buf2, featureBuf, buf2Size, 1.5);
+    smoothRiverBorders(buf2, featureBuf, buf2Size, 1.5);
 
-            const baseHeight = baseHeightBuf[idx];
-			buf2[idx] = Math.max(0, baseHeight);
+    // 피처맵 플래그 계산
+    computeFeatureFlags(featureBuf, buf2, buf2Size, smoothedDist, labels);
+    console.log(`=== (3) 피처맵 플래그 계산 완료 ===`);
+
+    console.log(`=== 강 파기 전체 완료 ===`);
+	
+	return { baseHeightBuf, projCache };
+
+} 
+
+const FeatureFlags = {
+    RIVER:         0x01,  // 강 여부
+    ROAD:          0x02,  // 도로 여부
+    RIVER_EDGE:    0x04,  // 강 가장자리
+    RIVER_CENTER:  0x08,  // 강 중심부
+    RIVER_SHALLOW: 0x10,  // 여울
+};
+
+function computeFeatureFlags(featureBuf, buf2, buf2Size, smoothedDist, labels) {
+    for (let idx = 0; idx < buf2Size * buf2Size; idx++) {
+
+        // 강 픽셀이 아니면 스킵
+        if ((featureBuf[idx] & FeatureFlags.RIVER) === 0) continue;
+
+        const dist = smoothedDist[idx];
+        const x = idx % buf2Size;
+        const y = (idx - x) / buf2Size;
+
+        // 강 가장자리: dist 작은 구간
+        if (dist < 2) {
+            featureBuf[idx] |= FeatureFlags.RIVER_EDGE;
+        }
+
+        // 강 중심부: dist 큰 구간
+        if (dist >= 6) {
+            featureBuf[idx] |= FeatureFlags.RIVER_CENTER;
+        }
+
+        // 여울: 폭이 좁고 주변보다 고도가 높은 곳
+        if (dist < 4) {
+            const h  = buf2[idx];
+            const hN = y > 0            ? buf2[(y-1)*buf2Size + x] : h;
+            const hS = y < buf2Size - 1 ? buf2[(y+1)*buf2Size + x] : h;
+            const hW = x > 0            ? buf2[y*buf2Size + (x-1)] : h;
+            const hE = x < buf2Size - 1 ? buf2[y*buf2Size + (x+1)] : h;
+            const avgNeighbor = (hN + hS + hW + hE) / 4;
+
+            if (h > avgNeighbor) {
+                featureBuf[idx] |= FeatureFlags.RIVER_SHALLOW;
+            }
+        }
+    }
+}
+
+function erodeRiver(buf2, buf2Size, featureBuf, smoothedDist, baseHeightBuf) {
+    for (let idx = 0; idx < buf2Size * buf2Size; idx++) {
+        if ((featureBuf[idx] & 0x01) === 0) continue;
+
+        // 강 평균 고도보다 높으면 강 픽셀에서 제외
+        if (buf2[idx] > baseHeightBuf[idx] + 100) {
+            featureBuf[idx] &= ~0x01;
+            continue;
+        } 
+
+        const carvingHeight = Math.min(200, smoothedDist[idx] * 10); 
+        buf2[idx] = Math.max(0, buf2[idx] - carvingHeight);
+    }
+}
+
+/**
+ * 강 유역별로 투영점들의 평균 고도를 계산하여 통일된 기준 고도 버퍼를 생성합니다.
+ * @param {Int32Array} labels       - 강 영역 레이블 배열 (computeRiverLabels 결과물)
+ * @param {number} totalRivers      - 발견된 총 강 유역 개수
+ * @param {Uint8Array} featureBuf   - 강 영역 마스크 버퍼
+ * @param {Array} projCache         - 미리 계산된 투영점 캐시 배열
+ * @param {Int32Array} buf2         - 원본 고도 데이터 버퍼
+ * @param {number} buf2Size         - 버퍼의 가로/세로 크기
+ * @returns {Float32Array} 유역별 평균 고도로 채워진 기준 고도 버퍼 (baseHeightBuf)
+ */
+function computeRiverAvgHeights(labels, totalRivers, featureBuf, projCache, buf2, buf2Size) {
+    const baseHeightBuf = new Float32Array(buf2Size * buf2Size);
+    
+    // 유역별 고도 합산 및 픽셀 카운트 배열 (0번 index는 육지이므로 비워둠)
+    const riverHeightSums = new Float64Array(totalRivers + 1);
+    const riverPixelCounts = new Int32Array(totalRivers + 1);
+
+    let minValue = Infinity;  
+    let maxValue = -Infinity; 
+    let validPixelCount = 0;  
+
+    // 1. 투영점 고도를 미터 단위 실수로 변환하여 유역별로 누적 합산
+    for (let i = 0; i < buf2Size * buf2Size; i++) {
+        if ((featureBuf[i] & 0x01) === 0) continue;
+
+        const result = projCache[i];
+        if (!result) continue;
+
+        // 투영점의 원본 고도 추출 및 실수 변환
+        const rawValue = buf2[result.qy * buf2Size + result.qx];
+        const actualHeightInMeters = (rawValue - 100000) / 10.0;
+
+        // 전체 통계용 계산
+        if (actualHeightInMeters < minValue) minValue = actualHeightInMeters;
+        if (actualHeightInMeters > maxValue) maxValue = actualHeightInMeters;
+        validPixelCount++;
+
+        // 해당 유역 그룹에 누적
+        const rId = labels[i];
+        if (rId > 0) {
+            riverHeightSums[rId] += actualHeightInMeters;
+            riverPixelCounts[rId]++;
         }
     }
 
-    // ── 2단계: 퇴적 ─────────────────────────────────────────────
-    // 침식으로 평탄화된 바닥 위에, 경계 고도를 강 중심 방향으로 전파하여
-    // 자연스러운 강둑 경사면 형성
-    console.log("=== 2단계: 퇴적 적용 (경계→중심 고도 전파) ===");
-	applyRiverSedimentation(buf2, featureBuf, distToBorder, distBuckets, buf2Size, 5);
-
-    console.log("=== 강 침식 및 퇴적 완료 ===");
-}
-
-
-/**
- * 강 퇴적 알고리즘 (Sediment Propagation via Distance Buckets)
- *
- * distBuckets를 활용하여 강 경계(dist=0)의 고도값을 강 중심 방향으로
- * 점진적으로 전파·평탄화한다. iterations 횟수만큼 반복하여
- * 전파 깊이(퇴적 강도)를 조절한다.
- *
- * @param {Float32Array|Int16Array} buf2        - 고도 데이터 버퍼 (읽기/쓰기)
- * @param {Uint8Array}              featureBuf  - 강 영역 마스크 버퍼 (bit0 = 강 내부)
- * @param {Float32Array}            dist        - computeBorderDist 결과 거리 배열
- * @param {Array<number[]>}         distBuckets - computeBorderDist 결과 버킷 배열
- * @param {number}                  size        - 버퍼의 가로/세로 크기 (buf2Size)
- * @param {number}                  [iterations=3] - 반복 횟수 (높을수록 퇴적 깊이 증가)
- */
-function applyRiverSedimentation(buf2, featureBuf, dist, distBuckets, size, iterations = 3) {
-	// 북, 북동, 동, 남동, 남, 남서, 서, 북서 순서
-	const DX = [ 0,  1, 1, 1, 0, -1, -1, -1];
-	const DY = [-1, -1, 0, 1, 1,  1,  0, -1];
-
-    for (let iter = 0; iter < iterations; iter++) {
-        const sediment = new Float32Array(buf2);
-
-        // i = 0부터 시작 (또는 1부터) - dist 단계별 순회
-		for (let i = 0; i < distBuckets.length; i++) {
-			const bucket = distBuckets[i];
-
-			// 1. 이번 i번째 단계의 평균 계산 결과를 임시로 저장할 공간
-			const tempUpdates = new Map(); // key: idx, value: 계산된 평균값
-
-			// 2. i번째 버킷의 모든 픽셀에 대해 "먼저 조사만 수행"
-			for (const idx of bucket) {
-				const x = idx % size;
-				const y = (idx - x) / size;
-
-				let totalSediment = sediment[idx];
-				let count = 1;
-				
-				// 나와 이웃들을 함께 묶어서 평균을 낼 대상 목록
-				const cluster = [idx]; 
-
-				for (let k = 0; k < DX.length; k++) {
-					const nx = x + DX[k];
-					const ny = y + DY[k];
-
-					if (nx < 0 || nx >= size || ny < 0 || ny >= size) continue;
-
-					const ni = ny * size + nx;
-
-					// 반경 1 이내에서 dist가 나보다 작은 이웃만 수집
-					if (i > 0) { 
-						if (dist[ni] > i) continue;
-					}
-
-					totalSediment += sediment[ni];
-					count++;
-					cluster.push(ni);
-				}
-				
-				const avg = totalSediment / count;
-
-				// 중요: 계산된 평균값을 '나와 내 이웃들'의 인덱스에 임시 매핑
-				// (여러 픽셀이 같은 이웃을 공유할 경우, 마지막에 계산된 평균으로 덮어써집니다)
-				for (const targetIdx of cluster) {
-					tempUpdates.set(targetIdx, avg);
-				}
-			}
-
-			// 3. i번째 버킷 순회가 '모두 끝난 후', 결과를 실제 버퍼(buf2)에 일괄 반영
-			for (const [targetIdx, avgValue] of tempUpdates) {
-				buf2[targetIdx] = avgValue;
-				
-				// 다음 i+1 단계에서 이 결과(buf2)를 원본 데이터로 참고해야 한다면 
-				// sediment 배열도 함께 업데이트해줍니다.
-				sediment[targetIdx] = avgValue; 
-			}
-		}
-
-        console.log(`=== 퇴적 반복 ${iter + 1}/${iterations} 완료 ===`);
+    if (validPixelCount > 0) {
+        console.log(`=== 강 투영점 고도 분석 완료 (총 ${validPixelCount} 픽셀) ===`);
+        console.log(`전체 최소 고도: ${minValue.toFixed(4)}m / 최대 고도: ${maxValue.toFixed(4)}m`);
+    } else {
+        console.log('강 내부 영역에서 유효한 투영점 고도 데이터를 찾지 못했습니다.');
+        return baseHeightBuf;
     }
+
+    // 2. 유역별 평균 고도 계산 및 Mapbox 정수 포맷 역변환 매핑 테이블 생성
+    const riverAvgRawValues = new Int32Array(totalRivers + 1);
+    for (let i = 1; i <= totalRivers; i++) {
+        if (riverPixelCounts[i] > 0) {
+            const avgHeight = riverHeightSums[i] / riverPixelCounts[i];
+            // 실수를 다시 Mapbox 인코딩 정수로 역변환
+            riverAvgRawValues[i] = Math.round(avgHeight * 10.0 + 100000);
+            console.log(`[유역 분석] 강 ID ${i} -> 픽셀 수: ${riverPixelCounts[i]}, 평균 고도: ${avgHeight.toFixed(2)}m`);
+        }
+    }
+
+    // 3. 최종 baseHeightBuf를 유역 평균 정수값으로 채우기
+    for (let i = 0; i < buf2Size * buf2Size; i++) {
+        if ((featureBuf[i] & 0x01) !== 0) {
+            const rId = labels[i];
+            baseHeightBuf[i] = riverAvgRawValues[rId]; 
+        }
+    }
+
+    return baseHeightBuf;
 }
+
 
 /**
  * 강 침식 후 경계면 고도 완화 (Border Gaussian Blur)
@@ -365,81 +408,6 @@ function computeRiverMinHeights(labels, totalRivers, featureBuf, projCache, buf2
         if ((featureBuf[i] & 0x01) !== 0) {
             const rId = labels[i];
             baseHeightBuf[i] = riverMinRawValues[rId]; 
-        }
-    }
-
-    return baseHeightBuf;
-}
-
-/**
- * 강 유역별로 투영점들의 평균 고도를 계산하여 통일된 기준 고도 버퍼를 생성합니다.
- * @param {Int32Array} labels       - 강 영역 레이블 배열 (computeRiverLabels 결과물)
- * @param {number} totalRivers      - 발견된 총 강 유역 개수
- * @param {Uint8Array} featureBuf   - 강 영역 마스크 버퍼
- * @param {Array} projCache         - 미리 계산된 투영점 캐시 배열
- * @param {Int32Array} buf2         - 원본 고도 데이터 버퍼
- * @param {number} buf2Size         - 버퍼의 가로/세로 크기
- * @returns {Float32Array} 유역별 평균 고도로 채워진 기준 고도 버퍼 (baseHeightBuf)
- */
-function computeRiverAvgHeights(labels, totalRivers, featureBuf, projCache, buf2, buf2Size) {
-    const baseHeightBuf = new Float32Array(buf2Size * buf2Size);
-    
-    // 유역별 고도 합산 및 픽셀 카운트 배열 (0번 index는 육지이므로 비워둠)
-    const riverHeightSums = new Float64Array(totalRivers + 1);
-    const riverPixelCounts = new Int32Array(totalRivers + 1);
-
-    let minValue = Infinity;  
-    let maxValue = -Infinity; 
-    let validPixelCount = 0;  
-
-    // 1. 투영점 고도를 미터 단위 실수로 변환하여 유역별로 누적 합산
-    for (let i = 0; i < buf2Size * buf2Size; i++) {
-        if ((featureBuf[i] & 0x01) === 0) continue;
-
-        const result = projCache[i];
-        if (!result) continue;
-
-        // 투영점의 원본 고도 추출 및 실수 변환
-        const rawValue = buf2[result.qy * buf2Size + result.qx];
-        const actualHeightInMeters = (rawValue - 100000) / 10.0;
-
-        // 전체 통계용 계산
-        if (actualHeightInMeters < minValue) minValue = actualHeightInMeters;
-        if (actualHeightInMeters > maxValue) maxValue = actualHeightInMeters;
-        validPixelCount++;
-
-        // 해당 유역 그룹에 누적
-        const rId = labels[i];
-        if (rId > 0) {
-            riverHeightSums[rId] += actualHeightInMeters;
-            riverPixelCounts[rId]++;
-        }
-    }
-
-    if (validPixelCount > 0) {
-        console.log(`=== 강 투영점 고도 분석 완료 (총 ${validPixelCount} 픽셀) ===`);
-        console.log(`전체 최소 고도: ${minValue.toFixed(4)}m / 최대 고도: ${maxValue.toFixed(4)}m`);
-    } else {
-        console.log('강 내부 영역에서 유효한 투영점 고도 데이터를 찾지 못했습니다.');
-        return baseHeightBuf;
-    }
-
-    // 2. 유역별 평균 고도 계산 및 Mapbox 정수 포맷 역변환 매핑 테이블 생성
-    const riverAvgRawValues = new Int32Array(totalRivers + 1);
-    for (let i = 1; i <= totalRivers; i++) {
-        if (riverPixelCounts[i] > 0) {
-            const avgHeight = riverHeightSums[i] / riverPixelCounts[i];
-            // 실수를 다시 Mapbox 인코딩 정수로 역변환
-            riverAvgRawValues[i] = Math.round(avgHeight * 10.0 + 100000);
-            console.log(`[유역 분석] 강 ID ${i} -> 픽셀 수: ${riverPixelCounts[i]}, 평균 고도: ${avgHeight.toFixed(2)}m`);
-        }
-    }
-
-    // 3. 최종 baseHeightBuf를 유역 평균 정수값으로 채우기
-    for (let i = 0; i < buf2Size * buf2Size; i++) {
-        if ((featureBuf[i] & 0x01) !== 0) {
-            const rId = labels[i];
-            baseHeightBuf[i] = riverAvgRawValues[rId]; 
         }
     }
 
